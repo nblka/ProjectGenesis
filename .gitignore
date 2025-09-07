@@ -6,8 +6,7 @@ __pycache__/
 *.pyc
 
 # Generated data and output
-data_SEED_*
-frames_SEED_*
+run_SEED_*
 *.mp4
 run_log.txt
 *.exe
