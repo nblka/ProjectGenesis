@@ -1,11 +1,12 @@
-# compile_video.py v10.3 - "Absolute Path"
+# compile_video.py v10.5 - "Timestamp Perfect"
 """
 Project Genesis - Video Compilation Module
 ------------------------------------------
-- v10.3:
-  - Теперь использует АБСОЛЮТНЫЕ пути для максимальной надежности.
-  - Решает проблему 'Impossible to open' на всех платформах.
-  - Упрощена обработка имен файлов.
+- v10.5:
+  - Добавлена директива 'duration' в file_list.txt для concat demuxer.
+  - Это решает проблему с отбрасыванием кадров (dropping frames) и
+    неправильными таймстампами (PTS/DTS) в FFMPEG.
+  - Упрощена и сделана более надежной основная команда ffmpeg.
 """
 import subprocess
 import os
@@ -16,80 +17,95 @@ import glob
 from termcolor import cprint
 
 def get_frame_number_for_sort(path):
-    """Извлекает номер кадра из имени файла для корректной сортировки."""
+    """Извлекает номер кадра из имени файла для корректной числовой сортировки."""
     try:
         return int(os.path.basename(path).split('_')[-1].split('.')[0])
     except (IndexError, ValueError):
         return -1
 
-def compile_video_worker(frames_dir, output_filename, framerate=30, keep_frames=True):
-    """Воркер-функция, использующая concat демуксер с абсолютными путями."""
+def compile_video_worker(frames_dir, output_filename, framerate=30, keep_frames=False):
+    """Воркер-функция, использующая concat demuxer с явным указанием длительности кадров."""
 
-    # ИСПРАВЛЕНИЕ 1: Сразу получаем абсолютный путь к папке с кадрами
-    abs_frames_dir = os.path.abspath(frames_dir)
-
-    if not os.path.exists(abs_frames_dir) or not os.listdir(abs_frames_dir):
-        cprint(f"Error: Frames directory '{abs_frames_dir}' is empty or does not exist.", 'red')
+    if not os.path.exists(frames_dir) or not os.path.isdir(frames_dir):
+        cprint(f"Error: Frames directory '{frames_dir}' not found.", 'red')
         return
 
-    cprint("Searching for frame files...", 'yellow')
-    # glob вернет пути относительно текущей папки, но мы их преобразуем
-    frame_files_relative = glob.glob(os.path.join(frames_dir, 'frame_*.png'))
-    if not frame_files_relative:
-        cprint(f"Error: No .png frames found in '{frames_dir}'.", 'red')
+    frame_files = glob.glob(os.path.join(frames_dir, 'frame_*.png'))
+    if not frame_files:
+        cprint(f"Error: No .png frames found in '{frames_dir}'. Nothing to compile.", 'red')
         return
 
-    frame_files_relative.sort(key=get_frame_number_for_sort)
+    frame_files.sort(key=get_frame_number_for_sort)
+    cprint(f"Found {len(frame_files)} frames to compile with framerate {framerate} fps.", 'yellow')
 
-    # Преобразуем все найденные пути в абсолютные
-    frame_files_absolute = [os.path.abspath(f) for f in frame_files_relative]
-
-    list_filename = os.path.join(abs_frames_dir, "file_list.txt")
-
-    # <<< ОТЛАДОЧНАЯ ПЕЧАТЬ >>>
-    cprint(f"Found {len(frame_files_absolute)} frames. The first 3 are:", 'magenta')
-    for i in range(min(3, len(frame_files_absolute))):
-        cprint(f"  - {frame_files_absolute[i]}", 'magenta')
-    # <<< КОНЕЦ ОТЛАДКИ >>>
+    list_filename = os.path.join(frames_dir, "ffmpeg_file_list.txt")
+    frame_duration = 1.0 / framerate
 
     try:
+        # --- НОВОЕ: Добавляем директиву duration ---
         with open(list_filename, 'w', encoding='utf-8') as f:
-            for filename in frame_files_absolute:
-                # ИСПРАВЛЕНИЕ 2: Упрощенный и более надежный формат записи
-                # Просто заменяем обратные слэши на прямые, этого достаточно
-                safe_path = filename.replace('\\', '/')
+            for filename in frame_files:
+                safe_path = os.path.abspath(filename).replace('\\', '/')
                 f.write(f"file '{safe_path}'\n")
+                f.write(f"duration {frame_duration}\n")
 
-        # ffmpeg будет запущен из текущей папки, но будет работать с абсолютными путями,
-        # что устраняет любую неоднозначность.
-        # --- Собираем НОВУЮ, БОЛЕЕ НАДЕЖНУЮ команду ffmpeg ---
+        # FFMPEG может потребовать, чтобы последний кадр не имел duration,
+        # но современные версии обычно справляются. Этот формат самый надежный.
+
+        # --- Собираем ФИНАЛЬНУЮ, САМУЮ НАДЕЖНУЮ команду FFMPEG ---
         ffmpeg_command = [
             'ffmpeg',
-            '-y',                  # Перезаписывать без вопроса (лучше ставить в начале)
-            '-f', 'concat',
-            '-safe', '0',
-            '-r', str(framerate),  # <<< ЯВНО УКАЗЫВАЕМ ЧАСТОТУ КАДРОВ ДЛЯ ВХОДНОГО ПОТОКА
-            '-i', list_filename,
+            '-y',                   # Перезаписывать без вопроса
+            '-f', 'concat',         # Используем concat demuxer
+            '-safe', '0',           # Разрешить абсолютные пути
+            '-i', list_filename,    # Входной файл - наш список
+
+            # Настройки кодека остаются теми же
             '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p', # <<< ИСПРАВЛЕНА ОПЕЧАТКА
-            '-r', str(framerate),  # <<< ЯВНО УКАЗЫВАЕМ ЧАСТОТУ КАДРОВ ДЛЯ ВЫХОДНОГО ПОТОКА
-            os.path.abspath(output_filename)
+            '-preset', 'slow',
+            '-profile:v', 'high',
+            '-crf', '23',
+            '-coder', '1',
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+
+            # Явно указываем частоту кадров ВЫХОДНОГО файла
+            '-r', str(framerate),
+
+            output_filename
         ]
 
-        cprint(f"Running FFMPEG with concat demuxer...", 'yellow')
-        result = subprocess.run(ffmpeg_command, capture_output=True, text=True, check=True, encoding='utf-8')
+        cprint(f"Running FFMPEG with explicit frame durations...", 'yellow')
+        print(f"Command: {' '.join(ffmpeg_command)}")
+        print("--- FFMPEG LOG START ---")
 
-        cprint(f"Video compilation successful! Output saved to '{os.path.abspath(output_filename)}'", 'green')
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding='utf-8',
+            errors='ignore' # Игнорируем ошибки кодировки, если ffmpeg выводит "мусор"
+        )
 
-        if not keep_frames:
+        for line in iter(process.stdout.readline, ''):
+            print(line.strip())
+
+        process.stdout.close()
+        return_code = process.wait()
+        print("--- FFMPEG LOG END ---")
+
+        if return_code != 0:
+            cprint(f"\nFFMPEG process failed with return code {return_code}.", 'red')
+            cprint("Temporary frames were NOT deleted.", 'cyan')
+            return
+
+        cprint(f"\nVideo compilation successful! Output saved to '{os.path.abspath(output_filename)}'", 'green')
+
+        if not keep_frames and os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
             cprint(f"Cleaning up frames directory '{frames_dir}'...", 'yellow')
             shutil.rmtree(frames_dir)
 
-    except subprocess.CalledProcessError as e:
-        cprint(f"\n--- FFMPEG ERROR ---", 'red')
-        cprint(f"FFMPEG failed. The command was:\n{' '.join(e.cmd)}", 'yellow')
-        cprint(f"\nFFMPEG stderr output:\n{e.stderr}", 'red')
-        cprint("PNG frames were NOT deleted.", 'cyan')
     except Exception as e:
         cprint(f"\nAn unexpected error occurred: {e}", 'red')
     finally:
@@ -98,10 +114,11 @@ def compile_video_worker(frames_dir, output_filename, framerate=30, keep_frames=
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compile a video from Project Genesis frames.")
+    # ... (Этот блок остается без изменений)
+    parser = argparse.ArgumentParser(description="Compile a YouTube-ready video from Project Genesis frames.")
     parser.add_argument('run_directory', type=str, help="Path to the run directory.")
     parser.add_argument('-fr', '--framerate', type=int, default=30, help="Framerate of the output video.")
-    parser.add_argument('--delete-frames', action='store_true', help="Delete the PNG frames folder after successful compilation.")
+    parser.add_argument('--keep-frames', action='store_true', help="Do not delete the PNG frames folder.")
     args = parser.parse_args()
 
     RUN_DIR = args.run_directory
@@ -115,8 +132,9 @@ if __name__ == "__main__":
 
     cprint(f"\n--- STAGE 3: COMPILING VIDEO for run '{metadata['run_name']}' ---", 'cyan')
 
-    output_filename = os.path.join(RUN_DIR, f"genesis_{metadata['run_name']}_v10.3.mp4")
-    keep_frames_flag = not args.delete_frames
+    output_filename = os.path.join(RUN_DIR, f"genesis_{metadata['run_name']}_v10.5.mp4")
+    keep_frames_flag = args.keep_frames
 
     compile_video_worker(FRAMES_DIR, output_filename, args.framerate, keep_frames_flag)
+
     cprint("--- Compilation Complete ---", 'cyan')

@@ -1,147 +1,97 @@
-# test_renderer.py
+# test_renderer.py v2.0 - "Viewer"
 """
-Модульный тест для renderer.py v9.2
------------------------------------------
-- Создает искусственный набор данных, имитирующий результат симуляции
-  с двумя стабильными квазичастицами ('комками').
+Утилита для рендеринга одного-единственного кадра из .npz файла.
+---------------------------------------------------------------------
+- Принимает путь к .npz файлу и путь к metadata.json как аргументы.
 - Вызывает render_frame_worker для создания одного тестового кадра.
-- Позволяет быстро проверить и настроить визуализацию, не запуская
-  полноценную симуляцию.
+- Идеально подходит для быстрой отладки визуализации на конкретных,
+  "проблемных" кадрах из реальной симуляции.
 
-Запуск: python test_renderer.py
-Результат: файл 'test_render.png' в текущей папке.
+Пример Запуска:
+python test_renderer.py run_SEED_12345.../data/frame_01234.npz run_SEED_12345.../metadata.json
 """
 import numpy as np
 import os
+import json
+import argparse
 from termcolor import cprint
 
 # --- Импортируем то, что тестируем ---
-from topologies import CrystalTopology
 from renderer import render_frame_worker
 
-def create_test_data(topology):
-    """Генерирует 'идеальные' данные для теста."""
-    num_points = topology.num_points
-    points = topology.points
-
-    # --- 1. Создаем фон: "холодный голубой вакуум" ---
-    psi = np.ones(num_points, dtype=complex) * 0.1 * np.exp(1j * np.pi)
-
-    # --- 2. Определяем центры и размеры наших двух "комков" ---
-    center1 = np.array([topology.width * 0.25, topology.height * np.sqrt(3)/2 * 0.6])
-    center2 = np.array([topology.width * 0.75, topology.height * np.sqrt(3)/2 * 0.3])
-    radius1 = 6.0
-    radius2 = 8.0
-
-    # --- 3. Находим узлы, принадлежащие каждому "комку" ---
-    dist1 = np.linalg.norm(points - center1, axis=1)
-    dist2 = np.linalg.norm(points - center2, axis=1)
-
-    nodes1 = np.where(dist1 < radius1)[0]
-    nodes2 = np.where(dist2 < radius2)[0]
-
-    # --- 4. Задаем свойства "комков" ---
-    # Комок 1: высокая амплитуда, "антиферромагнитная" фаза
-    amplitudes = np.abs(psi)
-    amplitudes[nodes1] = np.exp(-(dist1[nodes1]**2) / (2 * (radius1/2)**2)) * 0.9 + 0.1
-
-    phases = np.angle(psi)
-    # Создаем чередующуюся ("шахматную") фазу
-    for node_idx in nodes1:
-        x, y = topology.points[node_idx]
-        # Простое условие чередования
-        if (int(x) + int(y / (np.sqrt(3)/2))) % 2 == 0:
-            phases[node_idx] = 0.0 # Красный
-        else:
-            phases[node_idx] = np.pi # Голубой
-
-    # Комок 2: высокая амплитуда, "ортогональная" когерентная фаза (желто-зеленая)
-    amplitudes[nodes2] = np.exp(-(dist2[nodes2]**2) / (2 * (radius2/2)**2)) * 0.8 + 0.1
-    phases[nodes2] = np.pi / 2 # Зеленый
-
-    # Собираем финальное поле psi
-    psi = amplitudes * np.exp(1j * phases)
-
-    # --- 5. Создаем "отчет трекера" (stable_particles) ---
-    # Это то, что наш tracker.py v3.0 должен был бы найти
-
-    # Характеризуем комок 1
-    amp_sq1 = np.abs(psi[nodes1])**2
-    mass1 = np.sum(amp_sq1)
-    pos1 = np.average(points[nodes1], weights=amp_sq1, axis=0)
-    charge1 = np.sum(np.angle(psi[nodes1])) / (2 * np.pi)
-
-    # Характеризуем комок 2
-    amp_sq2 = np.abs(psi[nodes2])**2
-    mass2 = np.sum(amp_sq2)
-    pos2 = np.average(points[nodes2], weights=amp_sq2, axis=0)
-    charge2 = np.sum(np.angle(psi[nodes2])) / (2 * np.pi)
-
-    stable_particles = [
-        {
-            "track_id": 101, "age": 150, "size": len(nodes1),
-            "mass": mass1, "average_charge": charge1,
-            "position": pos1, "node_indices": nodes1
-        },
-        {
-            "track_id": 102, "age": 120, "size": len(nodes2),
-            "mass": mass2, "average_charge": charge2,
-            "position": pos2, "node_indices": nodes2
-        }
-    ]
-
-    return {
-        "points": points,
-        "psi": psi,
-        "simplices": topology.get_simplices(),
-        "stable_particles": np.array(stable_particles, dtype=object),
-        "tracked_count": 2
-    }
-
+def get_frame_number(path):
+    """Извлекает номер кадра из имени файла."""
+    try:
+        return int(os.path.basename(path).split('_')[-1].split('.')[0])
+    except (IndexError, ValueError):
+        cprint(f"Warning: Could not extract frame number from '{path}'. Using 0.", "yellow")
+        return 0
 
 if __name__ == "__main__":
-    cprint("--- Running Renderer Unit Test ---", "cyan")
+    # --- Настройка парсера ---
+    parser = argparse.ArgumentParser(
+        description="Render a single frame from a Project Genesis .npz data file.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument('data_file', type=str,
+                        help="Path to the .npz data file to render (e.g., 'run_.../data/frame_00123.npz').")
+    parser.add_argument('metadata_file', type=str,
+                        help="Path to the corresponding metadata.json file (e.g., 'run_.../metadata.json').")
+    args = parser.parse_args()
 
-    # 1. Создаем топологию
-    test_topology = CrystalTopology(width=30, height=20)
+    DATA_PATH = args.data_file
+    METADATA_PATH = args.metadata_file
 
-    # 2. Генерируем тестовые данные
-    cprint("Generating artificial data with two quasi-particles...", "yellow")
-    test_data = create_test_data(test_topology)
+    # --- Проверки на существование файлов ---
+    if not os.path.exists(DATA_PATH):
+        cprint(f"Error: Data file not found at '{DATA_PATH}'", 'red')
+        exit()
+    if not os.path.exists(METADATA_PATH):
+        cprint(f"Error: Metadata file not found at '{METADATA_PATH}'", 'red')
+        exit()
 
-    # 3. Сохраняем их во временный .npz файл (имитируем работу main.py)
-    temp_data_path = "temp_test_data.npz"
-    np.savez_compressed(temp_data_path, **test_data)
+    cprint(f"--- Running Single Frame Renderer Test on '{os.path.basename(DATA_PATH)}' ---", "cyan")
 
-    # 4. Готовим аргументы для render_frame_worker
+    # --- Загружаем metadata ---
+    try:
+        with open(METADATA_PATH, 'r') as f:
+            metadata = json.load(f)
+    except Exception as e:
+        cprint(f"Error reading metadata file: {e}", "red")
+        exit()
+
+    # --- Готовим аргументы для render_frame_worker ---
+    frame_num = get_frame_number(DATA_PATH)
+    output_dir = "." # Сохраняем в текущую папку для простоты
+
+    # Имя выходного файла будет информативным
+    output_filename_base = f"test_render_SEED_{metadata.get('seed', 'unknown')}_frame_{frame_num}.png"
+
+    # Убираем старый файл, если он есть
+    if os.path.exists(output_filename_base):
+        os.remove(output_filename_base)
+
     args_tuple = (
-        9999, # Номер кадра
-        temp_data_path,
-        ".", # Сохранить в текущую папку
-        {'seed': 'TEST', 'topology': '30x20', 'ic': 'test_case'}
+        frame_num,
+        DATA_PATH,
+        output_dir,
+        metadata
     )
 
-    # 5. Вызываем рендерер!
+    # --- Вызываем рендерер! ---
     cprint("Calling render_frame_worker...", "yellow")
-    output_filename = os.path.join(".", "frame_9999.png")
-
-    # Переименовываем для понятности
-    final_filename = "test_render.png"
-    if os.path.exists(final_filename):
-        os.remove(final_filename)
+    # render_frame_worker ожидает, что имя файла будет frame_xxxxx.png
+    temp_output_filename = os.path.join(output_dir, f"frame_{frame_num:05d}.png")
 
     result = render_frame_worker(args_tuple)
 
-    # 6. Проверяем результат и убираем за собой
-    if result is None and os.path.exists(output_filename):
-        os.rename(output_filename, final_filename)
-        cprint(f"SUCCESS! Test frame saved as '{final_filename}'. Please review it.", "green")
+    # --- Проверяем результат и убираем за собой ---
+    if result is None and os.path.exists(temp_output_filename):
+        os.rename(temp_output_filename, output_filename_base)
+        cprint(f"SUCCESS! Test frame saved as '{output_filename_base}'.", "green")
     else:
         cprint(f"FAILURE! Renderer returned an error: {result}", "red")
-
-    if os.path.exists(temp_data_path):
-        os.remove(temp_data_path)
-    if os.path.exists(output_filename): # На случай если переименование не удалось
-        os.remove(output_filename)
+        if os.path.exists(temp_output_filename):
+            os.remove(temp_output_filename) # Удаляем пустой или битый кадр
 
     cprint("--- Test Complete ---", "cyan")
