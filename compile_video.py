@@ -118,7 +118,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compile a YouTube-ready video from Project Genesis frames.")
     parser.add_argument('run_directory', type=str, help="Path to the run directory.")
     parser.add_argument('-fr', '--framerate', type=int, default=30, help="Framerate of the output video.")
-    parser.add_argument('--keep-frames', action='store_true', help="Do not delete the PNG frames folder.")
+    parser.add_argument('--keep-frames', default=True, help="Do not delete the PNG frames folder.")
     args = parser.parse_args()
 
     RUN_DIR = args.run_directory

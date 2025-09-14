@@ -1,9 +1,12 @@
-# causality.py v13.0
+# causality.py v13.1
 # Part of Project Genesis: Breathing Causality
-# v13.0: Final, robust version for the data-centric architecture.
-# - Contains the abstract base class for causality evolution.
-# - Provides two concrete, competing strategies: Convergent and Divergent flow.
-# - API is stabilized to accept psi and substrate components directly.
+# v13.1: "Conceptual Realignment" - The logic of this module is unchanged,
+#        but its role in the simulation has been clarified.
+# - This module no longer DRIVES the evolution of psi.
+# - Instead, it ANALYZES the state of psi at each frame to determine the
+#   EMERGENT causal graph G_causal.
+# - It contains competing hypotheses for how the quantum field might
+#   induce a directed causal structure on the static substrate.
 
 import numpy as np
 from abc import ABC, abstractmethod
@@ -11,10 +14,12 @@ from termcolor import cprint
 
 class AbstractCausalityEvolver(ABC):
     """
-    Abstract Base Class for all causality evolution strategies.
-    Defines the interface for modules that determine the instantaneous
-    directed causal graph G(n) from the quantum field state psi(n)
-    and the static undirected substrate.
+    Abstract Base Class for all emergent causality strategies.
+
+    Defines the interface for modules that compute the instantaneous
+    directed causal graph G_causal(t) from the quantum field state psi(t)
+    and the static undirected substrate. The result is an adjacency list
+    representing the "flow" of causality for that moment.
     """
     def __init__(self):
         self.strategy_name = "Abstract"
@@ -22,7 +27,7 @@ class AbstractCausalityEvolver(ABC):
     @abstractmethod
     def evolve(self, psi: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
         """
-        The core method that computes the INCOMING directed adjacency list.
+        Computes the INCOMING directed adjacency list for the current frame.
 
         Args:
             psi (np.ndarray): The current state of the quantum field.
@@ -31,49 +36,62 @@ class AbstractCausalityEvolver(ABC):
 
         Returns:
             list: An INCOMING directed adjacency list, where incoming_neighbors[i]
-                  contains a list of nodes `j` such that the causal edge is j -> i.
+                  contains a list of nodes `j` such that the emergent causal
+                  edge is defined as j -> i.
         """
         pass
 
 class AmplitudeConvergentCausality(AbstractCausalityEvolver):
     """
     HYPOTHESIS 1: "Convergent Flow" or "Uphill Causality"
-    Causality flows from lower amplitude to higher amplitude regions.
-    Represents information concentrating towards areas of high "presence".
+
+    Causality flows from lower amplitude to higher amplitude regions. This
+    can be interpreted as information concentrating towards areas of high
+    "presence" or mass-energy, akin to a gravitational pull. In this model,
+    stable particles would be "causal sinks".
     """
     def __init__(self):
         super().__init__()
         self.strategy_name = "Convergent (Uphill)"
         cprint(f"   -> Causality Strategy: {self.strategy_name}", 'cyan')
 
-
     def evolve(self, psi: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
         """
+
         Generates an incoming directed graph based on the rule:
-        An edge j -> i exists if amp_i > amp_j.
+        An edge j -> i exists if the amplitude at i is greater than at j.
         """
         incoming_neighbors = [[] for _ in range(num_points)]
         amplitudes_sq = np.abs(psi)**2
 
         for i in range(num_points):
             amp_i = amplitudes_sq[i]
+            # Iterate through the neighbors of node i
             for j in undirected_neighbors[i]:
-                if i > j: continue
+                # To avoid double-counting and self-loops, we only process pairs where i > j
+                if i > j:
+                    amp_j = amplitudes_sq[j]
 
-                amp_j = amplitudes_sq[j]
-
-                if amp_j > amp_i:
-                    incoming_neighbors[j].append(i) # Edge is i -> j
-                elif amp_i > amp_j:
-                    incoming_neighbors[i].append(j) # Edge is j -> i
+                    if amp_i > amp_j:
+                        # Amplitude at i is higher, so flow is j -> i.
+                        # We add j to the list of incoming neighbors for i.
+                        incoming_neighbors[i].append(j)
+                    elif amp_j > amp_i:
+                        # Amplitude at j is higher, so flow is i -> j.
+                        # We add i to the list of incoming neighbors for j.
+                        incoming_neighbors[j].append(i)
+                    # If amplitudes are equal, no causal edge is formed.
 
         return incoming_neighbors
 
 class AmplitudeDivergentCausality(AbstractCausalityEvolver):
     """
     HYPOTHESIS 2: "Divergent Flow" or "Downhill Causality"
-    Causality flows from higher amplitude to lower amplitude regions.
-    Represents energy/presence dissipating or flowing outwards, like heat.
+
+    Causality flows from higher amplitude to lower amplitude regions. This
+    can be interpreted as presence/energy dissipating or flowing outwards,
+    like heat or a radiating source. In this model, stable particles would
+    be "causal sources".
     """
     def __init__(self):
         super().__init__()
@@ -83,7 +101,7 @@ class AmplitudeDivergentCausality(AbstractCausalityEvolver):
     def evolve(self, psi: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
         """
         Generates an incoming directed graph based on the rule:
-        An edge j -> i exists if amp_j > amp_i.
+        An edge j -> i exists if the amplitude at j is greater than at i.
         """
         incoming_neighbors = [[] for _ in range(num_points)]
         amplitudes_sq = np.abs(psi)**2
@@ -91,38 +109,48 @@ class AmplitudeDivergentCausality(AbstractCausalityEvolver):
         for i in range(num_points):
             amp_i = amplitudes_sq[i]
             for j in undirected_neighbors[i]:
-                if i > j: continue
+                if i > j:
+                    amp_j = amplitudes_sq[j]
 
-                amp_j = amplitudes_sq[j]
-
-                if amp_j < amp_i:
-                    incoming_neighbors[j].append(i) # Edge is i -> j
-                elif amp_i < amp_j:
-                    incoming_neighbors[i].append(j) # Edge is j -> i
+                    if amp_i < amp_j:
+                        # Amplitude at j is higher, so flow is j -> i.
+                        # We add j to the list of incoming neighbors for i.
+                        incoming_neighbors[i].append(j)
+                    elif amp_j < amp_i:
+                        # Amplitude at i is higher, so flow is i -> j.
+                        # We add i to the list of incoming neighbors for j.
+                        incoming_neighbors[j].append(i)
+                    # If equal, no edge is formed.
 
         return incoming_neighbors
 
-
 # --- Example Usage for Testing ---
+# This block is for verifying the logic of the module independently.
 if __name__ == "__main__":
-    # The test block also needs to be updated to use the new API
-    cprint("\n--- Testing CausalityEvolver v12.3 (API Fix) ---", 'yellow')
+    cprint("\n--- Testing CausalityEvolver v13.1 (Conceptual Realignment) ---", 'yellow')
 
     # Test Setup
-    mock_neighbors = [[1], [0, 2], [1, 3], [2]]
+    # --- FIX: Correctly define a square graph (0-1, 1-2, 2-3, 3-0) ---
+    mock_neighbors = [[1, 3], [0, 2], [1, 3], [0, 2]]
     mock_num_points = 4
+    # Amplitudes: 0: 1.0, 1: 4.0, 2: 16.0, 3: 9.0
     mock_psi = np.array([1.0, 2.0, 4.0, 3.0], dtype=complex)
+    cprint(f"Test substrate: square graph. Amplitudes: {np.abs(mock_psi)**2}", 'white')
 
-    # Test 1: Convergent
+    # Test 1: Convergent (Flows "uphill" towards higher amplitude)
     convergent_evolver = AmplitudeConvergentCausality()
     incoming_graph_conv = convergent_evolver.evolve(mock_psi, mock_neighbors, mock_num_points)
-    expected_conv = [[], [0], [1, 3], []]
-    assert incoming_graph_conv == expected_conv, "Convergent test failed!"
+    # --- FIX: Recalculate expected result for the correct graph ---
+    # Expected flow: 0->1, 0->3, 1->2, 3->2
+    expected_conv = [[], [0], [1, 3], [0]]
+    assert incoming_graph_conv == expected_conv, f"Convergent test failed! Got {incoming_graph_conv}, expected {expected_conv}"
     cprint("Convergent Test Passed!", 'green')
 
-    # Test 2: Divergent
+    # Test 2: Divergent (Flows "downhill" away from higher amplitude)
     divergent_evolver = AmplitudeDivergentCausality()
     incoming_graph_div = divergent_evolver.evolve(mock_psi, mock_neighbors, mock_num_points)
-    expected_div = [[1], [2], [], [2]] # Logic re-verified: 1->0, 2->1, 2->3
-    assert incoming_graph_div == expected_div, "Divergent test failed!"
+    # --- FIX: Recalculate expected result for the correct graph ---
+    # Expected flow: 1->0, 3->0, 2->1, 2->3
+    expected_div = [[1, 3], [2], [], [2]]
+    assert incoming_graph_div == expected_div, f"Divergent test failed! Got {incoming_graph_div}, expected {expected_div}"
     cprint("Divergent Test Passed!", 'green')
