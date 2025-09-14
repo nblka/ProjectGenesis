@@ -1,31 +1,29 @@
-# tracker.py v3.0 - "Quantum Genome"
+# tracker.py v13.1
+# Part of Project Genesis: Breathing Causality
+# v13.1: Final, robust version. Fully topology-agnostic.
+
 import numpy as np
+from collections import deque
 from scipy.optimize import linear_sum_assignment
-from scipy.ndimage import label
 from termcolor import cprint
 
 class ParticleTracker:
     """
-    Класс-анализатор v3.0. Находит и отслеживает протяженные, стабильные
-    квазичастицы ('комки'), используя алгоритм оптимального сопоставления
-    на основе сохраняющихся 'квантовых чисел'.
+    Analyzes the simulation to find and track stable, time-averaged quasi-particles (attractors).
+    v13.1 is a pure topological analyzer.
     """
     def __init__(self,
-                 # --- Параметры для детектирования ---
-                 amp_threshold_factor=3.0,     # Порог амплитуды для сегментации
-                 min_clump_size=5,             # Минимальный размер 'комка' в узлах
+                 ema_alpha=0.1,
+                 amp_threshold_factor=2.5,
+                 min_clump_size=5,
+                 matching_cost_threshold=8.0,
+                 mass_weight=1.0,
+                 charge_weight=5.0,
+                 distance_weight=0.5,
+                 stability_threshold=50,
+                 log_death_threshold=20):
 
-                 # --- Параметры для трекинга (ключевое нововведение) ---
-                 matching_cost_threshold=10.0, # Макс. 'стоимость' для сопоставления. Если выше - это рождение/смерть.
-                 mass_weight=1.0,              # Вес разницы масс в функции стоимости
-                 charge_weight=5.0,            # Вес разницы зарядов (самый важный)
-                 distance_weight=0.2,          # Вес пространственного расстояния (менее важный)
-
-                 # --- Параметры для жизненного цикла частиц ---
-                 stability_threshold=50,       # Сколько кадров нужно прожить, чтобы стать 'стабильной'
-                 log_death_threshold=20):      # Минимальный возраст исчезнувшей частицы для логирования
-
-        # Сохраняем параметры
+        self.ema_alpha = ema_alpha
         self.amp_threshold_factor = amp_threshold_factor
         self.min_clump_size = min_clump_size
         self.matching_cost_threshold = matching_cost_threshold
@@ -35,152 +33,159 @@ class ParticleTracker:
         self.stability_threshold = stability_threshold
         self.log_death_threshold = log_death_threshold
 
-        # Внутреннее состояние трекера
         self.tracked_particles = {}
         self.next_track_id = 0
+        self.time_averaged_ampsq = None
+
+    def _update_smoothed_field(self, current_ampsq):
+        """Updates the exponentially smoothed amplitude field."""
+        if self.time_averaged_ampsq is None:
+            self.time_averaged_ampsq = current_ampsq.copy()
+        else:
+            self.time_averaged_ampsq = (self.ema_alpha * current_ampsq +
+                                        (1 - self.ema_alpha) * self.time_averaged_ampsq)
+
+    def _find_clumps_via_bfs(self, binary_map: np.ndarray, substrate_neighbors: list) -> list:
+        """Finds connected components (clumps) on a graph using Breadth-First Search."""
+        num_points = len(binary_map)
+        visited = np.zeros(num_points, dtype=bool)
+        all_clumps = []
+
+        for i in range(num_points):
+            if binary_map[i] and not visited[i]:
+                current_clump_indices = []
+                q = deque([i])
+                visited[i] = True
+
+                while q:
+                    current_node = q.popleft()
+                    current_clump_indices.append(current_node)
+
+                    for neighbor in substrate_neighbors[current_node]:
+                        if binary_map[neighbor] and not visited[neighbor]:
+                            visited[neighbor] = True
+                            q.append(neighbor)
+
+                all_clumps.append(current_clump_indices)
+
+        return all_clumps
 
     def _detect_and_characterize_clumps(self, sim):
-        """ШАГ 1 & 2: Находит и измеряет свойства 'комков' в одном кадре."""
+        """Finds and measures clumps, now with a ghost-busting mechanism."""
+        if self.time_averaged_ampsq is None: return []
+
+        smoothed_ampsq = self.time_averaged_ampsq
         psi = sim.psi
-        points = sim.topology.points
-        amplitudes_sq = np.abs(psi)**2
+        points = sim.substrate.points
+        neighbors = sim.substrate.neighbors
 
-        # --- 1. Сегментация по Амплитуде ---
-        global_mean_amp_sq = np.mean(amplitudes_sq)
-        if global_mean_amp_sq < 1e-9: return []
+        # --- Segmentation on the smoothed field (as before) ---
+        global_mean_smoothed_amp = np.mean(smoothed_ampsq)
+        if global_mean_smoothed_amp < 1e-9: return []
+        threshold = self.amp_threshold_factor * global_mean_smoothed_amp
+        binary_map_smooth = smoothed_ampsq > threshold
 
-        threshold = self.amp_threshold_factor * global_mean_amp_sq
-        binary_map = amplitudes_sq > threshold
+        # --- NEW: THE "REALITY CHECK" ---
+        # A clump must ALSO have a significant INSTANTANEOUS presence.
+        instantaneous_ampsq = np.abs(psi)**2
+        global_mean_instant_amp = np.mean(instantaneous_ampsq)
+        # We can use a slightly lower threshold for the reality check.
+        reality_check_threshold = 0.5 * threshold
+        binary_map_instant = instantaneous_ampsq > reality_check_threshold
 
-        # Создаем структуру для поиска соседей на решетке
-        structure = np.array([[0,1,0], [1,1,1], [0,1,0]]) # Соседи по ребрам
-        labeled_map, num_features = label(binary_map.reshape(sim.topology.height, sim.topology.width), structure=structure)
-        labeled_map = labeled_map.flatten()
+        # A node is considered "hot" only if it's hot in BOTH maps.
+        final_binary_map = binary_map_smooth & binary_map_instant
 
-        if num_features == 0:
-            return []
+        # --- Clump Finding now uses the final, combined map ---
+        clump_node_lists = self._find_clumps_via_bfs(final_binary_map, neighbors)
 
-        # --- 2. Характеризация найденных 'комков' ---
+        if not clump_node_lists: return []
+
+        # Characterization
         candidates = []
-        for i in range(1, num_features + 1):
-            # Находим все узлы, принадлежащие этому 'комку'
-            node_indices = np.where(labeled_map == i)[0]
-
-            if len(node_indices) < self.min_clump_size:
-                continue
+        for node_indices in clump_node_lists:
+            if len(node_indices) < self.min_clump_size: continue
 
             clump_psi = psi[node_indices]
-            clump_amps_sq = amplitudes_sq[node_indices]
+            clump_amps_sq_instant = np.abs(clump_psi)**2
             clump_points = points[node_indices]
 
-            # Вычисляем эмерджентные свойства
-            mass = np.sum(clump_amps_sq)
-            position = np.average(clump_points, weights=clump_amps_sq, axis=0)
+            mass = np.sum(clump_amps_sq_instant)
+            if mass < 1e-9: continue
 
-            # Более точный 'топологический' заряд
-            center_phase = np.angle(np.sum(clump_psi * clump_amps_sq)) # Средневзвешенная фаза
+            position = np.average(clump_points, weights=clump_amps_sq_instant, axis=0)
+
+            center_phase = np.angle(np.sum(clump_psi * clump_amps_sq_instant))
             charge = np.sum(np.angle(np.exp(1j * (np.angle(clump_psi) - center_phase)))) / (2 * np.pi)
 
             candidates.append({
-                "mass": mass,
-                "charge": charge,
-                "position": position,
-                "size": len(node_indices),
-                "node_indices": node_indices # Сохраняем узлы для будущих нужд
+                "mass": mass, "charge": charge, "position": position,
+                "size": len(node_indices), "node_indices": node_indices
             })
+
         return candidates
 
-    def _create_new_track(self, candidate, frame_num):
-        """Создает запись для новой, ранее не виденной частицы."""
-        new_id = self.next_track_id
-        self.next_track_id += 1
-
-        self.tracked_particles[new_id] = {
-            **candidate,
-            "track_id": new_id,
-            "age": 1,
-            "last_seen_frame": frame_num,
-            "state": "tracking",
-            "charge_history": [candidate["charge"]],
-            "average_charge": candidate["charge"]
-        }
-
-    def _update_track(self, track_id, candidate, frame_num):
-        """Обновляет данные существующей частицы."""
-        particle_data = self.tracked_particles[track_id]
-
-        # Обновляем все, кроме истории
-        particle_data.update(candidate)
-
-        particle_data["age"] += 1
-        particle_data["last_seen_frame"] = frame_num
-
-        # Обновляем скользящее среднее для заряда
-        particle_data["charge_history"].append(candidate["charge"])
-        if len(particle_data["charge_history"]) > 10: # Ограничиваем историю
-            particle_data["charge_history"].pop(0)
-        particle_data["average_charge"] = np.mean(particle_data["charge_history"])
-
     def analyze_frame(self, sim, frame_num):
-        """Главный метод анализа. Вызывается из main.py на каждом шаге."""
+        """Main analysis method for a single frame."""
+        self._update_smoothed_field(np.abs(sim.psi)**2)
         current_candidates = self._detect_and_characterize_clumps(sim)
 
-        # --- Управление жизненным циклом треков ---
-        # 1. Отмечаем все существующие треки как 'невиденные' в этом кадре
-        for p_data in self.tracked_particles.values():
-            p_data['seen_this_frame'] = False
+        for p_data in self.tracked_particles.values(): p_data['seen_this_frame'] = False
 
-        # 2. Если есть что сопоставлять, строим матрицу стоимости
         previous_tracks = list(self.tracked_particles.values())
         if previous_tracks and current_candidates:
-            cost_matrix = np.full((len(previous_tracks), len(current_candidates)), np.inf)
-
+            cost_matrix = np.zeros((len(previous_tracks), len(current_candidates)))
             for i, p_old in enumerate(previous_tracks):
                 for j, p_new in enumerate(current_candidates):
-                    mass_diff = abs(p_old['mass'] - p_new['mass']) / (p_old['mass'] + 1e-9) # Нормируем
+                    mass_diff = abs(p_old['mass'] - p_new['mass'])
                     charge_diff = abs(p_old['average_charge'] - p_new['charge'])
                     dist_diff = np.linalg.norm(p_old['position'] - p_new['position'])
-
                     cost = (self.mass_weight * mass_diff +
                             self.charge_weight * charge_diff +
                             self.distance_weight * dist_diff)
                     cost_matrix[i, j] = cost
 
-            # 3. Находим оптимальные пары
             old_indices, new_indices = linear_sum_assignment(cost_matrix)
 
-            # 4. Обновляем сопоставленные треки
             for i, j in zip(old_indices, new_indices):
                 if cost_matrix[i, j] < self.matching_cost_threshold:
-                    track_id_to_update = previous_tracks[i]['track_id']
-                    self._update_track(track_id_to_update, current_candidates[j], frame_num)
-                    self.tracked_particles[track_id_to_update]['seen_this_frame'] = True
-                    current_candidates[j]['matched'] = True # Помечаем кандидата как использованного
+                    track_id = previous_tracks[i]['track_id']
+                    self._update_track(track_id, current_candidates[j], frame_num)
+                    self.tracked_particles[track_id]['seen_this_frame'] = True
+                    current_candidates[j]['matched'] = True
 
-        # 5. Обрабатываем 'смерти' и 'рождения'
-        dead_tracks = []
+        dead_ids = [tid for tid, p in self.tracked_particles.items() if not p.get('seen_this_frame')]
+        for tid in dead_ids:
+            if self.tracked_particles[tid]['age'] > self.log_death_threshold:
+                cprint(f"INFO (Frame {frame_num}): Attractor ID {tid} (age {self.tracked_particles[tid]['age']}) dissipated.", 'grey')
+            del self.tracked_particles[tid]
+
+        for cand in current_candidates:
+            if not cand.get('matched', False):
+                self._create_new_track(cand, frame_num)
+
+        stable_attractors = []
         for track_id, p_data in self.tracked_particles.items():
-            if not p_data.get('seen_this_frame', False):
-                if p_data['age'] > self.log_death_threshold:
-                    cprint(f"INFO: Particle ID {track_id} (age {p_data['age']}) disappeared.", 'yellow')
-                dead_tracks.append(track_id)
+            if p_data['age'] > self.stability_threshold:
+                if p_data.get('state') != 'stable':
+                    p_data['state'] = 'stable'
+                    cprint(f"STABLE ATTRACTOR CONFIRMED! (Frame {frame_num}) ID: {track_id}, Age: {p_data['age']}, "
+                           f"Mass: {p_data['mass']:.2f}, Charge: {p_data['average_charge']:.2f}", 'green', attrs=['bold'])
+                stable_attractors.append(p_data)
 
-        for track_id in dead_tracks:
-            del self.tracked_particles[track_id]
+        return stable_attractors
 
-        for candidate in current_candidates:
-            if not candidate.get('matched', False):
-                self._create_new_track(candidate, frame_num)
+    def _create_new_track(self, candidate, frame_num):
+        new_id = self.next_track_id; self.next_track_id += 1
+        self.tracked_particles[new_id] = {
+            **candidate, "track_id": new_id, "age": 1, "last_seen_frame": frame_num,
+            "state": "tracking", "charge_history": [candidate["charge"]],
+            "average_charge": candidate["charge"]
+        }
 
-        # --- Обновление состояний (стабильность) и возврат списка для рендерера ---
-        stable_particles_list = []
-        for track_id, p_data in self.tracked_particles.items():
-            if p_data['age'] >= self.stability_threshold and p_data.get('state') != 'stable':
-                p_data['state'] = 'stable'
-                cprint(f"STABLE PARTICLE CONFIRMED! ID: {track_id}, Age: {p_data['age']}, "
-                       f"Mass: {p_data['mass']:.2f}, Charge: {p_data['average_charge']:.2f}", 'green')
-
-            if p_data.get('state') == 'stable':
-                stable_particles_list.append(p_data)
-
-        return stable_particles_list
+    def _update_track(self, track_id, candidate, frame_num):
+        p = self.tracked_particles[track_id]
+        p.update(candidate); p["age"] += 1; p["last_seen_frame"] = frame_num
+        p["charge_history"].append(candidate["charge"])
+        if len(p["charge_history"]) > 10: p["charge_history"].pop(0)
+        p["average_charge"] = np.mean(p["charge_history"])

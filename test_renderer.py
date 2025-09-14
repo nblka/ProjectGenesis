@@ -1,97 +1,75 @@
-# test_renderer.py v2.0 - "Viewer"
-"""
-Утилита для рендеринга одного-единственного кадра из .npz файла.
----------------------------------------------------------------------
-- Принимает путь к .npz файлу и путь к metadata.json как аргументы.
-- Вызывает render_frame_worker для создания одного тестового кадра.
-- Идеально подходит для быстрой отладки визуализации на конкретных,
-  "проблемных" кадрах из реальной симуляции.
+# test_renderer.py v14.3
+# FIX: Imports the `init_worker` function from the correct module (`render_frames.py`)
+#      instead of trying to find it in the worker module.
 
-Пример Запуска:
-python test_renderer.py run_SEED_12345.../data/frame_01234.npz run_SEED_12345.../metadata.json
-"""
 import numpy as np
+import argparse
 import os
 import json
-import argparse
 from termcolor import cprint
 
-# --- Импортируем то, что тестируем ---
-from renderer import render_frame_worker
-
-def get_frame_number(path):
-    """Извлекает номер кадра из имени файла."""
-    try:
-        return int(os.path.basename(path).split('_')[-1].split('.')[0])
-    except (IndexError, ValueError):
-        cprint(f"Warning: Could not extract frame number from '{path}'. Using 0.", "yellow")
-        return 0
+from renderer_worker import render_frame_worker, worker_substrate_data
+from render_frames import init_worker
 
 if __name__ == "__main__":
-    # --- Настройка парсера ---
     parser = argparse.ArgumentParser(
-        description="Render a single frame from a Project Genesis .npz data file.",
+        description="Render a single frame from a Project Genesis run for testing.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument('data_file', type=str,
-                        help="Path to the .npz data file to render (e.g., 'run_.../data/frame_00123.npz').")
-    parser.add_argument('metadata_file', type=str,
-                        help="Path to the corresponding metadata.json file (e.g., 'run_.../metadata.json').")
+    parser.add_argument('run_directory', type=str, help="Path to the run directory.")
+    parser.add_argument('frame_number', type=int, help="The specific frame number to render.")
+    parser.add_argument('-o', '--output', type=str, default=None)
     args = parser.parse_args()
 
-    DATA_PATH = args.data_file
-    METADATA_PATH = args.metadata_file
+    RUN_DIR = args.run_directory
+    FRAME_NUM = args.frame_number
 
-    # --- Проверки на существование файлов ---
-    if not os.path.exists(DATA_PATH):
-        cprint(f"Error: Data file not found at '{DATA_PATH}'", 'red')
-        exit()
-    if not os.path.exists(METADATA_PATH):
-        cprint(f"Error: Metadata file not found at '{METADATA_PATH}'", 'red')
-        exit()
+    DATA_DIR = os.path.join(RUN_DIR, 'data')
+    METADATA_PATH = os.path.join(RUN_DIR, 'metadata.json')
+    DATA_PATH = os.path.join(DATA_DIR, f"frame_{FRAME_NUM:05d}.npz")
+    SUBSTRATE_PATH = os.path.join(RUN_DIR, 'substrate.npz')
 
-    cprint(f"--- Running Single Frame Renderer Test on '{os.path.basename(DATA_PATH)}' ---", "cyan")
+    if not os.path.exists(SUBSTRATE_PATH):
+        cprint(f"Error: Substrate file not found at '{SUBSTRATE_PATH}'.", 'red'); exit()
 
-    # --- Загружаем metadata ---
-    try:
-        with open(METADATA_PATH, 'r') as f:
-            metadata = json.load(f)
-    except Exception as e:
-        cprint(f"Error reading metadata file: {e}", "red")
-        exit()
+    if not os.path.exists(METADATA_PATH) or not os.path.exists(DATA_PATH):
+        cprint(f"Error: Required file(s) not found in '{RUN_DIR}'.", 'red'); exit()
 
-    # --- Готовим аргументы для render_frame_worker ---
-    frame_num = get_frame_number(DATA_PATH)
-    output_dir = "." # Сохраняем в текущую папку для простоты
+    cprint(f"--- Running Single Frame Renderer on Frame {FRAME_NUM} ---", "cyan")
 
-    # Имя выходного файла будет информативным
-    output_filename_base = f"test_render_SEED_{metadata.get('seed', 'unknown')}_frame_{frame_num}.png"
+    with open(METADATA_PATH, 'r') as f:
+        metadata = json.load(f)
 
-    # Убираем старый файл, если он есть
+    cprint("Initializing worker environment...", "yellow")
+    with np.load(SUBSTRATE_PATH, allow_pickle=True) as sub_data:
+        substrate_points = sub_data['points']
+        substrate_neighbors = sub_data['neighbors']
+
+    init_worker(substrate_points, substrate_neighbors)
+
+    assert 'points' in worker_substrate_data, "Worker initialization failed."
+
+    output_dir = "."
+    if args.output:
+        output_filename_base = args.output
+    else:
+        output_filename_base = f"test_{metadata.get('run_name', 'run')}_frame_{FRAME_NUM}.png"
+
+    temp_output_filename = os.path.join(output_dir, f"frame_{FRAME_NUM:05d}.png")
     if os.path.exists(output_filename_base):
         os.remove(output_filename_base)
 
-    args_tuple = (
-        frame_num,
-        DATA_PATH,
-        output_dir,
-        metadata
-    )
+    args_tuple = (FRAME_NUM, DATA_PATH, output_dir, metadata)
 
-    # --- Вызываем рендерер! ---
-    cprint("Calling render_frame_worker...", "yellow")
-    # render_frame_worker ожидает, что имя файла будет frame_xxxxx.png
-    temp_output_filename = os.path.join(output_dir, f"frame_{frame_num:05d}.png")
-
+    cprint(f"Calling render_frame_worker for frame {FRAME_NUM}...", "yellow")
     result = render_frame_worker(args_tuple)
 
-    # --- Проверяем результат и убираем за собой ---
     if result is None and os.path.exists(temp_output_filename):
         os.rename(temp_output_filename, output_filename_base)
-        cprint(f"SUCCESS! Test frame saved as '{output_filename_base}'.", "green")
+        cprint(f"SUCCESS! Test frame saved as '{os.path.abspath(output_filename_base)}'.", "green")
     else:
         cprint(f"FAILURE! Renderer returned an error: {result}", "red")
         if os.path.exists(temp_output_filename):
-            os.remove(temp_output_filename) # Удаляем пустой или битый кадр
+            os.remove(temp_output_filename)
 
     cprint("--- Test Complete ---", "cyan")

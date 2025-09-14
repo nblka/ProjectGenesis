@@ -1,69 +1,113 @@
-# initial_conditions.py
+# initial_conditions.py v13.1
+# Part of Project Genesis: Breathing Causality
+# v13.1: Final, robust version for the data-centric architecture.
+# - All generators now accept a TopologyData object.
+# - Vortex generation logic is improved to be more physically robust.
+
 import numpy as np
+from termcolor import cprint
+
+# Import the data container class for type hinting
+from topologies import TopologyData
 
 class BaseInitialState:
-    def generate(self, topology):
+    """Abstract base class for initial state generators."""
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
         raise NotImplementedError
 
-class WavePacketState(BaseInitialState):
-    def __init__(self, momentum_kick=30.0):
-        print(f"   -> IC: Coherent Wave Packet (kick={momentum_kick})")
-        self.momentum_kick = momentum_kick
+class PrimordialSoupState(BaseInitialState):
+    """Generates a completely random psi field (maximum entropy)."""
+    def __init__(self):
+        cprint(f"   -> IC Strategy: Primordial Soup", 'cyan')
 
-    def generate(self, topology):
-        center = np.mean(topology.points, axis=0)
-        distances = np.linalg.norm(topology.points - center, axis=1)
-        # Делаем пакет более узким
-        amplitude = np.exp(-distances ** 2 / (2.0 * (topology.width / 10)**2))
-        phase = np.exp(1j * topology.points[:, 0] * self.momentum_kick)
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        """Generates a normalized random complex vector."""
+        num_points = topology_data.num_points
+
+        # Generate random values for real and imaginary parts from a normal distribution.
+        # This is a standard way to produce a complex field with uniform phase distribution.
+        psi = (np.random.randn(num_points) + 1j * np.random.randn(num_points))
+
+        norm = np.linalg.norm(psi)
+        if norm > 1e-9:
+            return psi / norm
+        else:
+            # Fallback for the astronomically unlikely case of a zero vector
+            psi[0] = 1.0
+            return psi
+
+class WavePacketState(BaseInitialState):
+    """Generates a coherent Gaussian wave packet with an initial momentum."""
+    def __init__(self, momentum_kick: float = 30.0, packet_width_ratio: float = 0.1):
+        cprint(f"   -> IC Strategy: Coherent Wave Packet (kick={momentum_kick})", 'cyan')
+        self.momentum_kick = momentum_kick
+        self.packet_width_ratio = packet_width_ratio
+
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        points = topology_data.points
+
+        if points.shape[0] == 0:
+            return np.array([], dtype=np.complex128)
+
+        # Determine the overall size of the topology for scaling the packet width
+        grid_span = np.max(points, axis=0) - np.min(points, axis=0)
+        # Use the largest dimension to define the characteristic width
+        grid_width = np.max(grid_span) if grid_span.size > 0 else 1.0
+
+        center = np.mean(points, axis=0)
+
+        distances_sq = np.sum((points - center)**2, axis=1)
+        sigma_sq = (grid_width * self.packet_width_ratio)**2
+        if sigma_sq < 1e-9: sigma_sq = 1.0 # Avoid division by zero for tiny topologies
+
+        amplitude = np.exp(-distances_sq / (2.0 * sigma_sq))
+        phase = np.exp(1j * points[:, 0] * self.momentum_kick) # Momentum along x-axis
+
         psi = amplitude * phase
         return psi / np.linalg.norm(psi)
 
-class PrimordialSoupState(BaseInitialState):
-    def __init__(self):
-        print(f"   -> IC: Primordial Soup")
-
-    def generate(self, topology):
-        random_amplitudes = np.random.randn(topology.num_points)
-        random_angles = np.random.uniform(0, 2 * np.pi, topology.num_points)
-        psi = random_amplitudes * np.exp(1j * random_angles)
-        return psi / np.linalg.norm(psi)
-
-
 class VortexState(BaseInitialState):
-    def __init__(self, position_ratio=(0.5, 0.5), vortex_radius=1):
-        print(f"   -> IC: Single Topological Vortex")
-        self.position_ratio = position_ratio
-        self.vortex_radius = vortex_radius # Пока не используется, но оставим для будущего
+    """Generates a single topological vortex defect in a cold vacuum."""
+    def __init__(self, position_ratio=(0.5, 0.5)):
+        cprint(f"   -> IC Strategy: Single Topological Vortex", 'cyan')
+        self.position_ratio = np.array(position_ratio)
 
-    def generate(self, topology):
-        # 1. Создаем "холодный вакуум"
-        # ИСПРАВЛЕНИЕ: Начинаем с истинного "голубого" вакуума (фаза PI)
-        psi = np.ones(topology.num_points, dtype=complex) * np.exp(1j * np.pi)
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        points = topology_data.points
+        num_points = topology_data.num_points
 
-        # 2. Находим центр для нашего вихря
-        # ИСПРАВЛЕНИЕ: Вычисляем геометрический центр всех точек
-        min_coords = np.min(topology.points, axis=0)
-        max_coords = np.max(topology.points, axis=0)
+        if num_points == 0:
+            return np.array([], dtype=np.complex128)
 
-        # Точка для вихря будет интерполяцией между min и max координатами
-        center_point_coords = min_coords + (max_coords - min_coords) * np.array(self.position_ratio)
+        # 1. Find the center for our vortex
+        min_coords = np.min(points, axis=0)
+        max_coords = np.max(points, axis=0)
+        center_coords = min_coords + (max_coords - min_coords) * self.position_ratio
 
-        # Находим узел, ближайший к вычисленной центральной точке
-        distances_to_center = np.linalg.norm(topology.points - center_point_coords, axis=1)
-        center_idx = np.argmin(distances_to_center)
+        # 2. Create the phase vortex
+        # The phase of each point is its polar angle relative to the vortex center.
+        relative_coords = points - center_coords
+        # We only do this for 2D topologies. For 3D etc., a different logic is needed.
+        if topology_data.dimensionality == 2:
+            angles = np.arctan2(relative_coords[:, 1], relative_coords[:, 0])
+            phase_profile = np.exp(1j * angles)
+        else:
+            # Fallback for other dimensions: no phase vortex
+            phase_profile = np.ones(num_points, dtype=complex)
 
-        # 3. Создаем вихрь по вашему рецепту
-        neighbors_of_center = topology.neighbors[center_idx]
+        # 3. Create the amplitude profile (a "hole" in the center)
+        # We want the amplitude to be zero at the singularity and 1 far away.
+        distances = np.linalg.norm(relative_coords, axis=1)
+        # Use a tanh function for a smooth transition from 0 (at the center) to 1 (far away).
+        # The divisor controls the "size" of the vortex core.
+        amplitude_profile = np.tanh(distances / 2.0)
 
-        # Устанавливаем фазу центрального узла на 0 (противофаза для "голубого" вакуума)
-        psi[center_idx] = np.exp(1j * 0)
+        psi = amplitude_profile * phase_profile
 
-        # 4. Устанавливаем амплитуды
-        vortex_nodes = [center_idx] + neighbors_of_center
-        amplitudes = np.ones(topology.num_points) * 0.01 # Очень тихий вакуум
-        amplitudes[vortex_nodes] = 1.0 # Пик энергии в центре вихря
-        psi *= amplitudes
-
-        # 5. Финальная нормализация
-        return psi / np.linalg.norm(psi)
+        # 4. Final normalization
+        norm = np.linalg.norm(psi)
+        if norm > 1e-9:
+            return psi / norm
+        else:
+            # This can happen if all points are at the center, return a flat state
+            return np.ones(num_points) / np.sqrt(num_points)

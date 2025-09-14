@@ -1,69 +1,83 @@
-# topologies.py
+# topologies.py v13.1
+# Part of Project Genesis: Breathing Causality
+# v13.1: Final, robust data-centric architecture.
+# - Contains the passive TopologyData container.
+# - Contains generator functions for creating topologies.
+# - Contains a factory to select the correct generator.
+
 import numpy as np
-from tqdm import tqdm
 from termcolor import cprint
 
-class CrystalTopology:
-    def __init__(self, width=80, height=60):
-        cprint(f"1. Building Topology via Genesis Algorithm ({width}x{height})...", 'cyan', attrs=['bold'])
-        self.width = width
-        self.height = height
-        self.num_points = width * height
+class TopologyData:
+    """A simple, passive data container for the static substrate."""
+    def __init__(self, points: np.ndarray, neighbors: list, dimensionality: int, **kwargs):
+        self.points = points
+        self.neighbors = neighbors
+        self.dimensionality = dimensionality
+        self.num_points = len(points)
 
-        self.points = np.zeros((self.num_points, 2), dtype=float)
-        self.neighbors = [[] for _ in range(self.num_points)]
+        # Store any additional metadata (like width, height for crystals)
+        self.metadata = kwargs
+        self.__dict__.update(kwargs) # Allow direct attribute access, e.g., topology_data.width
 
-        # --- АЛГОРИТМ "ГЕНЕЗИС" ---
-        for r in range(height): # Идем ряд за рядом (r = row)
-            for q in range(width):  # Идем узел за узлом в ряду (q = column)
+        # Validation
+        assert len(points) == len(neighbors), "Points and neighbors lists must have the same length."
+        if points.ndim == 2: # Ensure this check doesn't fail for empty arrays
+            assert points.shape[1] == dimensionality, "Points' dimension must match the specified dimensionality."
 
-                idx = r * width + q
+# --- GENERATOR FUNCTIONS ---
 
-                # 1. Размещаем узел в пространстве (визуализация)
-                # Сдвигаем только нечетные ряды для 'зигзага'
-                px = q + 0.5 * (r % 2)
-                py = r * np.sqrt(3) / 2
-                self.points[idx] = [px, py]
+def generate_crystal_topology(width: int = 80, height: int = 60) -> TopologyData:
+    """Generator function for a 2D crystal topology."""
+    cprint(f"1. Generating Substrate: 2D Crystal ({width}x{height})", 'cyan', attrs=['bold'])
+    num_points = width * height
+    points = np.zeros((num_points, 2), dtype=float)
+    neighbors = [[] for _ in range(num_points)]
 
-                # 2. Определяем соседей на основе уже 'построенной' части мира
-                # Сосед слева
-                if q > 0:
-                    left_idx = r * width + (q - 1)
-                    self.neighbors[idx].append(left_idx)
-                    self.neighbors[left_idx].append(idx)
+    for r in range(height):
+        for q in range(width):
+            idx = r * width + q
+            px = q + 0.5 * (r % 2); py = r * np.sqrt(3) / 2
+            points[idx] = [px, py]
 
-                # Соседи сверху (их положение зависит от четности ряда)
-                if r > 0:
-                    if r % 2 == 0: # Четный ряд
-                        # Соседи: верхний-левый и верхний-правый
-                        if q > 0:
-                            top_left_idx = (r - 1) * width + (q - 1)
-                            self.neighbors[idx].append(top_left_idx)
-                            self.neighbors[top_left_idx].append(idx)
-                        top_right_idx = (r - 1) * width + q
-                        self.neighbors[idx].append(top_right_idx)
-                        self.neighbors[top_right_idx].append(idx)
-                    else: # Нечетный ряд
-                        # Соседи: верхний-левый и верхний-правый
-                        top_left_idx = (r - 1) * width + q
-                        self.neighbors[idx].append(top_left_idx)
-                        self.neighbors[top_left_idx].append(idx)
-                        if q < width - 1:
-                            top_right_idx = (r - 1) * width + (q + 1)
-                            self.neighbors[idx].append(top_right_idx)
-                            self.neighbors[top_right_idx].append(idx)
+            if q > 0:
+                left_idx = idx - 1
+                neighbors[idx].append(left_idx)
+                neighbors[left_idx].append(idx)
+            if r > 0:
+                if r % 2 == 0:
+                    if q > 0:
+                        top_left_idx = idx - width - 1
+                        neighbors[idx].append(top_left_idx)
+                        neighbors[top_left_idx].append(idx)
+                    top_right_idx = idx - width
+                    neighbors[idx].append(top_right_idx)
+                    neighbors[top_right_idx].append(idx)
+                else:
+                    top_left_idx = idx - width
+                    neighbors[idx].append(top_left_idx)
+                    neighbors[top_left_idx].append(idx)
+                    if q < width - 1:
+                        top_right_idx = idx - width + 1
+                        neighbors[idx].append(top_right_idx)
+                        neighbors[top_right_idx].append(idx)
 
-        self.points -= np.mean(self.points, axis=0)
+    points -= np.mean(points, axis=0)
 
-    def get_simplices(self):
-        print("   -> Generating simplices (bulletproof method on Genesis lattice)...")
-        simplices_set = set()
-        neighbor_sets = [set(n) for n in self.neighbors]
-        for idx1 in tqdm(range(self.num_points), desc="   - Finding Triangles"):
-            for idx2 in self.neighbors[idx1]:
-                if idx1 > idx2: continue
-                common_neighbors = neighbor_sets[idx1].intersection(neighbor_sets[idx2])
-                for idx3 in common_neighbors:
-                    if idx2 > idx3: continue
-                    simplices_set.add((idx1, idx2, idx3))
-        return np.array(list(simplices_set), dtype=int)
+    return TopologyData(points=points, neighbors=neighbors, dimensionality=2, width=width, height=height)
+
+# --- FACTORY ---
+
+class TopologyFactory:
+    @staticmethod
+    def create(topology_type: str, params: dict) -> TopologyData:
+        if topology_type == 'crystal':
+            return generate_crystal_topology(
+                width=params.get('width', 80),
+                height=params.get('height', 60)
+            )
+        # Add other generators here in the future
+        # elif topology_type == 'random_3d':
+        #     ...
+        else:
+            raise ValueError(f"Unknown topology type: '{topology_type}'")
