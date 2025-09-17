@@ -139,6 +139,7 @@ def main():
     print(f"Total simulation time: {time.time() - start_time:.2f} seconds.")
 
     metadata['final_frame_count'] = final_frame_count
+    metadata['global_max_amp_sq'] = analytics.global_max_amp_sq_so_far
     with open(os.path.join(RUN_DIR, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=4)
 

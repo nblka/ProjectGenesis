@@ -8,7 +8,7 @@ from termcolor import cprint
 
 # --- Import all REAL components for the integration test ---
 from topologies import TopologyData, generate_crystal_topology
-from causality import AmplitudeConvergentCausality, AbstractCausalityEvolver
+from causality import AmplitudeConvergentCausality, AmplitudeDivergentCausality
 from initial_conditions import BaseInitialState
 from simulation import Simulation
 
@@ -28,6 +28,14 @@ class FlatState(BaseInitialState):
         amp = 1.0 / np.sqrt(topology_data.num_points)
         return np.full(topology_data.num_points, amp, dtype=complex)
 
+class IslandState(BaseInitialState):
+    def __init__(self, island_nodes: list):
+        self.island_nodes = island_nodes
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        psi = np.zeros(topology_data.num_points, dtype=complex)
+        amp = 1.0 / np.sqrt(len(self.island_nodes))
+        psi[self.island_nodes] = amp
+        return psi
 
 class TestSimulationV15(unittest.TestCase):
     """A suite of tests for the physically corrected Simulation class."""
@@ -73,37 +81,32 @@ class TestSimulationV15(unittest.TestCase):
         sim.close()
         cprint("Test Passed: Flat state is stable.", 'green')
 
-    def test_03_wave_packet_diffusion(self):
-        """Test 3: A 'hot spot' must diffuse to its neighbors."""
-        cprint("  -> Testing wave packet diffusion (Schrödinger evolution)...", 'cyan')
-        center_node = 4 # Center of the 3x3 grid
-        initial_state_gen = HotSpotState(spot_index=center_node)
-        sim = Simulation(self.topology_data, self.causality_gen, initial_state_gen)
+    def test_03_island_evolution_divergent(self):
+        """Test 3a: An 'island' must spread out under Divergent causality."""
+        cprint("  -> Testing island evolution (Divergent flow)...", 'cyan')
 
-        amp_sq_before = np.abs(sim.psi[center_node])**2
-        self.assertAlmostEqual(amp_sq_before, 1.0)
+        center_node = 4
+        island_nodes = [center_node] + self.topology_data.neighbors[center_node]
+
+        initial_state_gen = IslandState(island_nodes=island_nodes)
+        causality_gen = AmplitudeDivergentCausality()
+        sim = Simulation(self.topology_data, causality_gen, initial_state_gen)
+
+        energy_before = np.sum(np.abs(sim.psi[island_nodes])**2)
+        self.assertAlmostEqual(energy_before, 1.0)
 
         sim.update_step()
 
-        amp_sq_after = np.abs(sim.psi[center_node])**2
+        energy_after = np.sum(np.abs(sim.psi[island_nodes])**2)
 
-        # The amplitude at the center MUST decrease.
         self.assertLess(
-            amp_sq_after,
-            amp_sq_before,
-            "Amplitude at the center of a hot spot did not decrease."
-        )
-
-        # The sum of amplitudes of neighbors MUST increase.
-        neighbors_of_center = self.topology_data.neighbors[center_node]
-        neighbor_amp_sq_sum = np.sum(np.abs(sim.psi[neighbors_of_center])**2)
-        self.assertGreater(
-            neighbor_amp_sq_sum,
-            0.0,
-            "Amplitude did not diffuse to neighbors."
+            energy_after,
+            energy_before,
+            "Energy did not flow outwards from the island under Divergent rule."
         )
         sim.close()
-        cprint("Test Passed: Hot spot correctly diffuses.", 'green')
+        cprint("Test Passed: Island correctly diffuses (Divergent).", 'green')
+
 
     def test_04_causal_graph_correctness(self):
         """Test 4: The returned causal graph must match the state of psi AFTER evolution."""
@@ -129,6 +132,29 @@ class TestSimulationV15(unittest.TestCase):
         )
         sim.close()
         cprint("Test Passed: Causal graph is correctly generated from the new psi state.", 'green')
+
+    def test_05_island_evolution_convergent(self):
+        """Test 3b: An 'island' must contract or stabilize under Convergent causality."""
+        cprint("  -> Testing island evolution (Convergent flow)...", 'cyan')
+
+        center_node = 4
+        island_nodes = [center_node] + self.topology_data.neighbors[center_node]
+
+        initial_state_gen = IslandState(island_nodes=island_nodes)
+        causality_gen = AmplitudeConvergentCausality()
+        sim = Simulation(self.topology_data, causality_gen, initial_state_gen)
+
+        energy_before = np.sum(np.abs(sim.psi[island_nodes])**2)
+        sim.update_step()
+        energy_after = np.sum(np.abs(sim.psi[island_nodes])**2)
+
+        self.assertGreaterEqual(
+            energy_after,
+            energy_before * 0.99, # Даем небольшой допуск на численные эффекты
+            "Energy should not significantly dissipate from the island under Convergent rule."
+        )
+        sim.close()
+        cprint("Test Passed: Island correctly contracts/stabilizes (Convergent).", 'green')
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

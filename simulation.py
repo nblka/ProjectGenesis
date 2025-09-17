@@ -52,67 +52,32 @@ class Simulation:
                 cprint(f"   -> Warning: Multiprocessing pool setup failed: {e}. Running single-threaded.", 'yellow')
                 self.pool = None
 
-    def _evolve_psi(self, dt: float = 0.01):
-        """
-        [CORRECTED] Evolves the psi field for one step using the standard
-        Schrödinger equation discretized on the static substrate graph.
+    def _evolve_psi(self, directed_causality: list, dt: float = 0.01):
+        psi_new = self.psi.copy()
 
-        The equation is: i * dψ/dt = -ħ²/2m * ∇²ψ
-        In our simulation units (ħ=1, 2m=1, dt is small), this becomes:
-        dψ/dt = i * ∇²ψ
-
-        The discrete graph Laplacian (∇²ψ) at a node `i` is defined as:
-        (Σ ψ_j) - k * ψ_i, where j are the neighbors of i, and k is the degree of i.
-        """
-
-        laplacian = np.zeros(self.num_points, dtype=np.complex128)
-
-        # The Laplacian is calculated over the STATIC, UNDIRECTED substrate graph.
-        neighbors = self.substrate.neighbors
-
-        # This loop can be optimized for performance, but is kept simple for clarity.
         for i in range(self.num_points):
-            node_neighbors = neighbors[i]
-            if node_neighbors:
-                # Sum of psi values at neighboring nodes minus the value at the central node,
-                # weighted by the number of neighbors (degree).
-                laplacian[i] = np.sum(self.psi[node_neighbors]) - len(node_neighbors) * self.psi[i]
+            causal_inputs = directed_causality[i] # Узлы j, для которых есть связь j -> i
 
-        # Apply the evolution step based on the Schrödinger equation.
-        # The equation dψ/dt = i * ∇²ψ leads to the Euler integration step:
-        # ψ(t+dt) = ψ(t) + dt * (i * ∇²ψ)
-        self.psi += 1j * laplacian * dt
+            if causal_inputs:
+                incoming_signal = np.sum(self.psi[causal_inputs])
+                epsilon = dt * len(causal_inputs)
+                psi_new[i] = (1 - 1j * epsilon) * self.psi[i] + (1j * dt) * incoming_signal
 
-        # Re-normalize to conserve total probability. This is crucial for numerical
-        # stability, especially with the simple Euler integration method.
+        self.psi = psi_new
+
         norm = np.linalg.norm(self.psi)
         if norm > 1e-9:
             self.psi /= norm
 
     def update_step(self) -> list:
-        """
-        [CORRECTED] Performs one full step of the "Breathing Causality" cycle.
-
-        NEW PARADIGM:
-        1. The quantum field evolves according to its own intrinsic laws (Schrödinger).
-        2. The resulting state of the field determines the structure of the emergent
-           causal graph for that instant (for analysis and visualization).
-        """
-
-        # --- Step 1: Quantum field evolves on the static substrate ---
-        # The evolution of psi is now independent of the causality of the previous step.
-        self._evolve_psi()
-
-        # --- Step 2: The new state of psi determines the new causal graph ---
-        # The causal graph is now a "shadow" or an emergent property cast by the
-        # quantum field, rather than the tracks it must follow.
         causal_graph = self.causality_evolver.evolve(
             self.psi,
             self.substrate.neighbors,
             self.num_points
         )
 
-        # The causal graph is returned for analytics and rendering purposes.
+        self._evolve_psi(causal_graph)
+
         return causal_graph
 
     def close(self):

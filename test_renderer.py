@@ -45,7 +45,16 @@ if __name__ == "__main__":
         substrate_points = sub_data['points']
         substrate_neighbors = sub_data['neighbors']
 
-    init_worker(substrate_points, substrate_neighbors)
+    # CRITICAL STEP: Get the global max amplitude from the metadata
+    global_max_amp_sq = metadata.get('global_max_amp_sq')
+    if global_max_amp_sq is None or global_max_amp_sq < 1e-12:
+        cprint(f"Warning: 'global_max_amp_sq' not found or is zero in metadata. Visualization might be inconsistent.", 'yellow')
+        global_max_amp_sq = 1.0 # Fallback to prevent division by zero
+
+    # Add this crucial piece of information to the shared metadata for workers
+    metadata['global_max_amp_sq_for_norm'] = global_max_amp_sq
+
+    init_worker(substrate_points, substrate_neighbors, global_max_amp_sq)
 
     assert 'points' in worker_substrate_data, "Worker initialization failed."
 

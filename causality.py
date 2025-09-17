@@ -99,10 +99,6 @@ class AmplitudeDivergentCausality(AbstractCausalityEvolver):
         cprint(f"   -> Causality Strategy: {self.strategy_name}", 'cyan')
 
     def evolve(self, psi: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
-        """
-        Generates an incoming directed graph based on the rule:
-        An edge j -> i exists if the amplitude at j is greater than at i.
-        """
         incoming_neighbors = [[] for _ in range(num_points)]
         amplitudes_sq = np.abs(psi)**2
 
@@ -112,15 +108,10 @@ class AmplitudeDivergentCausality(AbstractCausalityEvolver):
                 if i > j:
                     amp_j = amplitudes_sq[j]
 
-                    if amp_i < amp_j:
-                        # Amplitude at j is higher, so flow is j -> i.
-                        # We add j to the list of incoming neighbors for i.
-                        incoming_neighbors[i].append(j)
-                    elif amp_j < amp_i:
-                        # Amplitude at i is higher, so flow is i -> j.
-                        # We add i to the list of incoming neighbors for j.
+                    if amp_i > amp_j:
                         incoming_neighbors[j].append(i)
-                    # If equal, no edge is formed.
+                    elif amp_j > amp_i:
+                        incoming_neighbors[i].append(j)
 
         return incoming_neighbors
 
