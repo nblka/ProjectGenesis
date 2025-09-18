@@ -1,18 +1,17 @@
-# renderer_worker.py v22.3
+# renderer_worker.py v22.4
 # Part of Project Genesis: Breathing Causality
-# v22.3: Final "Quantum Heatmap" Implementation
-# - Renders a smooth, interpolated heatmap for the energy |psi|^2, ensuring
-#   perfect alignment with the substrate nodes using `griddata`.
-# - Uses an ABSOLUTE normalization based on the global maximum |psi|^2 provided
-#   by the main script, ensuring consistent brightness across all frames.
-# - The substrate nodes are now small, fixed-size points, colored by phase.
-# - Causal graph is rendered with a clean, informative dark-to-light gradient.
+# v22.4: "Particle Restoration" - CRITICAL bugfix.
+# - Restored the missing rendering logic for stable particles (Layer 4).
+# - The worker now correctly draws the Convex Hull and ID label for each
+#   stable particle found by the tracker.
+# - This fixes the issue where particles were tracked but not visible.
 
 import numpy as np
 import matplotlib
 matplotlib.use('Agg') # Use a non-interactive backend for server/multiprocessing
 import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PatchCollection
+from matplotlib.patches import Polygon
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.interpolate import griddata
 from scipy.spatial import ConvexHull
@@ -20,8 +19,6 @@ import os
 import traceback
 
 # --- Global dictionaries for worker process caching ---
-# This is an efficient way to hold large, static data in each worker process
-# without needing to send it with every task.
 worker_substrate_data = {}
 worker_colormap_data = {}
 worker_log_norm_data = {}
@@ -32,9 +29,7 @@ def init_worker(points, neighbors, global_max_amp_sq):
     worker_substrate_data['neighbors'] = neighbors
 
     # --- Pre-calculate log normalization constants ---
-    # Epsilon prevents log(0) errors. It should be a tiny fraction of the max.
     epsilon = 1e-3
-    # The maximum value on our log scale.
     log_max = np.log1p(global_max_amp_sq / epsilon)
 
     worker_log_norm_data['epsilon'] = epsilon
@@ -75,7 +70,6 @@ def get_colormaps():
     if 'heatmap_cmap' in worker_colormap_data:
         return worker_colormap_data['heatmap_cmap'], worker_colormap_data['phase_cmap']
 
-    # A custom "inferno-like" colormap for the energy heatmap
     colors = ["#08040E", "#0c0a2b", "#4a0b5e", "#9b1d5f", "#e2534b", "#fcae1e", "#f0f0c0"]
     nodes = [0.0, 0.05, 0.2, 0.4, 0.6, 0.8, 1.0]
     heatmap_cmap = LinearSegmentedColormap.from_list("genesis_heatmap", list(zip(nodes, colors)))
@@ -97,18 +91,15 @@ def render_frame_worker(args_tuple):
             all_tracked_particles = unwrap_numpy_data(data.get('all_tracked_particles'))
             tracked_count = unwrap_numpy_data(data.get('tracked_count', 0))
 
-        substrate_points = worker_substrate_data.get('points')
-        substrate_neighbors = worker_substrate_data.get('neighbors')
-        global_max_amp_sq = shared_info.get('global_max_amp_sq_for_norm', 1.0)
-
         # --- 2. LOAD CACHED DATA FROM WORKER ---
         substrate_points = worker_substrate_data.get('points')
+        substrate_neighbors = worker_substrate_data.get('neighbors')
         epsilon = worker_log_norm_data.get('epsilon')
         log_max = worker_log_norm_data.get('log_max')
         if substrate_points is None or epsilon is None:
             raise RuntimeError("Worker not initialized correctly.")
 
-        # --- 2. SETUP SCENE ---
+        # --- 3. SETUP SCENE ---
         FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES, DPI = 19.2, 10.8, 100
         fig, ax = plt.subplots(figsize=(FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES), dpi=DPI)
         fig.set_facecolor('#08040E')
@@ -117,22 +108,13 @@ def render_frame_worker(args_tuple):
         points_2d = substrate_points[:, :2]
         heatmap_cmap, phase_cmap = get_colormaps()
 
-        # --- 3. RENDER LAYERS (BOTTOM TO TOP) ---
+        # --- 4. RENDER LAYERS (BOTTOM TO TOP) ---
 
         # Layer 0: Energy Heatmap (|psi|^2)
         amplitudes_sq = np.abs(psi)**2
-
-        # Apply the logarithmic transformation
         log_amplitudes = np.log1p(amplitudes_sq / epsilon)
-
         heatmap, extent = create_heatmap_and_extent(points_2d, log_amplitudes, resolution_h=540, resolution_w=960)
-
-        # ABSOLUTE NORMALIZATION on the log scale
-        if log_max > 1e-9:
-            normalized_heatmap = heatmap / log_max
-        else:
-            normalized_heatmap = heatmap # Fallback
-
+        normalized_heatmap = heatmap / log_max if log_max > 1e-9 else heatmap
         ax.imshow(normalized_heatmap, extent=extent, origin='lower', cmap=heatmap_cmap, zorder=0, aspect='auto', vmin=0.0, vmax=1.0)
 
         # Layer 1: Static Substrate (Edges)
@@ -148,6 +130,7 @@ def render_frame_worker(args_tuple):
 
         # Layer 3: Dynamic Causal Graph (Gradient Lines)
         if is_valid_array(causal_graph):
+            # (Logic for drawing causal graph remains unchanged)
             source_indices = np.array([j for i, inc in enumerate(causal_graph) for j in inc if is_valid_array(inc) and j < len(points_2d)])
             target_indices = np.array([i for i, inc in enumerate(causal_graph) for _ in inc if is_valid_array(inc)])
             if source_indices.size > 0:
@@ -156,19 +139,59 @@ def render_frame_worker(args_tuple):
                 p_midpoints = (p_sources + p_targets) / 2.0
                 dark_segments = np.array(list(zip(p_sources, p_midpoints)))
                 light_segments = np.array(list(zip(p_midpoints, p_targets)))
-                all_segments = np.concatenate([dark_segments, light_segments])
-                all_colors = ['#303030'] * len(dark_segments) + ['#808080'] * len(light_segments)
-                ax.add_collection(LineCollection(all_segments, colors=all_colors, linewidths=0.7, zorder=2))
+                ax.add_collection(LineCollection(dark_segments, colors='#303030', linewidths=0.7, zorder=2))
+                ax.add_collection(LineCollection(light_segments, colors='#808080', linewidths=0.7, zorder=2))
 
-        # Layer 4: Stable Particles (Hulls and Text)
+        # --- FIX: Layer 4: Stable Particles (Hulls and Text) ---
+        # This is the block that was missing.
         stable_particles = [p for p in all_tracked_particles if is_valid_array(all_tracked_particles) and p.get('state') == 'stable']
         if stable_particles:
-            # (Code for hulls and text remains the same, with high zorder)
-            pass
+            hulls = []
+            for particle in stable_particles:
+                node_indices = particle.get('node_indices')
+                if is_valid_array(node_indices) and len(node_indices) >= 3:
+                    # Get the 2D coordinates for the particle's nodes
+                    hull_points = points_2d[node_indices]
+                    try:
+                        # Calculate the convex hull to find the boundary
+                        hull = ConvexHull(hull_points)
+                        # Create a polygon patch from the hull vertices
+                        polygon = Polygon(hull_points[hull.vertices], closed=True)
+                        hulls.append(polygon)
 
-        # --- 4. FINALIZE AND SAVE ---
+                        # Add the particle ID text at its center of mass
+                        pos = particle.get('position')
+                        track_id = particle.get('track_id', '?')
+                        ax.text(pos[0], pos[1] + 1.5, f"ID:{track_id}",
+                                color='white', fontsize=10, ha='center',
+                                path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=2, foreground='black')])
+                    except Exception:
+                        # This can happen if points are collinear, etc. Fail gracefully.
+                        pass
+            for particle in stable_particles:
+                pos_2d = particle["position"][:2]
+                label = (f"ID:{particle['track_id']} A:{particle['age']}\n"
+                         f"M:{particle['mass']:.3f} Q:{particle['average_charge']:.2f}")
+                ax.text(pos_2d[0], pos_2d[1] + 1.2, label, color='#FFFFFF', fontsize=9, ha='center', alpha=0.7,
+                        fontweight='bold', zorder=11, bbox=dict(facecolor='black', alpha=0.5, edgecolor='#FFD700'))
+
+            # Add all hulls to the plot at once for efficiency
+            if hulls:
+                ax.add_collection(PatchCollection(
+                    hulls,
+                    facecolor='#FFD700',  # Gold color
+                    # edgecolor='#FFFFFF',  # White border
+                    edgecolor='#FFD700',  # Gold color
+                    linewidth=1.5,
+                    linestyles='--',
+                    alpha=0.25,            # Semi-transparent
+                    zorder=4              # Render on top of most things
+                ))
+        # --- END OF FIX ---
+
+        # --- 5. FINALIZE AND SAVE ---
         stable_count = len(stable_particles)
-        title = (f"Genesis v22.3 | {shared_info.get('run_name', '...')} | "
+        title = (f"Genesis v22.4 | {shared_info.get('run_name', '...')} | "
                  f"Frame: {frame_num} | Tracked: {tracked_count} | Stable: {stable_count}")
         ax.set_title(title, fontsize=14, color='white', pad=20)
 
