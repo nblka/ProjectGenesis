@@ -136,6 +136,66 @@ class VortexState(BaseInitialState):
 
         return field
 
+class SeededSoupState(BaseInitialState):
+    """
+    Generates a Primordial Soup with a small, localized "seed" of order.
+    """
+    def __init__(self, seed_strength: float = 5.0, seed_size: int = 1):
+        """
+        Args:
+            seed_strength: How much higher the amplitude in the seed is vs the background.
+            seed_size: The "radius" of the seed in graph steps (0=1 node, 1=center+neighbors, etc).
+        """
+        cprint(f"   -> IC Strategy: Seeded Soup (strength={seed_strength}, size={seed_size})", 'cyan')
+        self.seed_strength = seed_strength
+        self.seed_size = seed_size
+
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        # 1. Start with a standard primordial soup.
+        field = ScalarField(topology_data.num_points)
+        psi_values = (np.random.randn(field.num_points) + 
+                      1j * np.random.randn(field.num_points))
+        
+        # 2. Find the center and create the seed region.
+        # We find the geometric center of the points for a visually central seed.
+        center_point = np.mean(topology_data.points, axis=0)
+        distances = np.linalg.norm(topology_data.points - center_point, axis=1)
+        center_node_idx = np.argmin(distances)
+        
+        # Use Breadth-First Search (BFS) to find all nodes within `seed_size` steps.
+        seed_indices = {center_node_idx}
+        q = [center_node_idx]
+        visited = {center_node_idx}
+        for _ in range(self.seed_size):
+            if not q: break
+            new_q = []
+            for node in q:
+                for neighbor in topology_data.neighbors[node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        seed_indices.add(neighbor)
+                        new_q.append(neighbor)
+            q = new_q
+        
+        seed_indices = list(seed_indices)
+        cprint(f"   -> Placing a seed with {len(seed_indices)} nodes at the center.", 'grey')
+
+        # 3. Enhance the seed region.
+        # Increase amplitude in the seed region.
+        # We work with complex numbers directly, not just amplitudes.
+        seed_base_value = self.seed_strength * (1 + 1j) # An arbitrary complex value
+        psi_values[seed_indices] += seed_base_value
+
+        # Make the phase in the seed region coherent (all pointing the same way).
+        # We can do this by adding a large real number, for instance.
+        psi_values[seed_indices] += self.seed_strength
+        
+        # 4. Assign to field and normalize globally.
+        field.values = psi_values.reshape(-1, 1)
+        field.normalize()
+        
+        return field
+    
 
 # --- This block allows for independent testing of the module ---
 if __name__ == "__main__":

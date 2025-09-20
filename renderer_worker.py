@@ -35,7 +35,7 @@ def init_worker(points, neighbors, global_interaction_source_max):
     """Initializes each worker process with large, static data."""
     worker_substrate_data['points'] = points
     worker_substrate_data['neighbors'] = neighbors
-    epsilon = 1e-3
+    epsilon = 1e-1
     log_max = np.log1p(global_interaction_source_max / epsilon) if global_interaction_source_max > 0 else 1.0
     worker_log_norm_data['epsilon'] = epsilon
     worker_log_norm_data['log_max'] = log_max
