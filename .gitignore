@@ -7,6 +7,7 @@ __pycache__/
 
 # Generated data and output
 run_SEED_*
+run_chronos_*
 *.mp4
 run_log.txt
 *.exe
