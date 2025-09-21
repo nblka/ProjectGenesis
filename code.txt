@@ -1,0 +1,2656 @@
+# analytics.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Style Refactoring"
+# - All hardcoded colors and print styles are now imported from the
+#   central `styling` module.
+# - No changes to the physics or logic.
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+# --- NEW: Import centralized styling ---
+from styling import C, FONT_SIZE_LABEL, FONT_SIZE_TITLE, COLOR_ENTROPY, COLOR_CONCENTRATION
+# We keep termcolor for the function, but use our constants for colors
+from termcolor import cprint
+
+class GlobalAnalytics:
+    """
+    Analyzes the entire simulation run to extract emergent, global properties.
+    """
+    def __init__(self, num_points: int):
+        cprint(f"4. Initializing Global Analytics Engine (v16.0)...", C.SUBHEADER, attrs=C.BOLD_ATTR)
+        if num_points <= 0:
+            raise ValueError("Number of points must be positive.")
+        self.num_points = num_points
+        self.causality_flow_matrix = np.zeros((num_points, num_points), dtype=np.float32)
+        self.entropy_history = []
+        self.concentration_history = []
+        self.global_interaction_source_max = 0.0
+
+        cprint(f"   -> Ready to analyze {num_points} nodes.", C.SUCCESS)
+
+    def analyze_step(self, interaction_source: np.ndarray, causal_graph: list, frame_num: int):
+        """Accumulates statistics from a single simulation step."""
+        # --- Causality flow accumulation (no changes) ---
+        for i in range(self.num_points):
+            if i < len(causal_graph) and causal_graph[i] is not None:
+                for j in causal_graph[i]:
+                    self.causality_flow_matrix[j, i] += 1
+
+        # --- Thermodynamics Analysis (now uses interaction_source) ---
+        current_max = np.max(interaction_source)
+        if current_max > self.global_interaction_source_max:
+            self.global_interaction_source_max = current_max
+
+        # 1. Shannon Entropy
+        # To be a valid probability distribution, the source must sum to 1.
+        # We assume the source is |psi|^2 which is normalized.
+        non_zero_source = interaction_source[interaction_source > 1e-12]
+        shannon_entropy = -np.sum(non_zero_source * np.log2(non_zero_source))
+        self.entropy_history.append(shannon_entropy)
+
+        # 2. Concentration Index
+        mean_source = np.mean(interaction_source)
+        if mean_source > 1e-12:
+            std_dev_source = np.std(interaction_source)
+            concentration_index = std_dev_source / mean_source
+        else:
+            concentration_index = 0.0
+
+        self.concentration_history.append(concentration_index)
+
+    def generate_report(self, run_directory: str):
+        """Generates and saves final plots and data files after the simulation."""
+        cprint("\n--- Generating Global Analytics Report ---", C.WARNING)
+        report_dir = os.path.join(run_directory, 'analytics')
+        os.makedirs(report_dir, exist_ok=True)
+
+        # --- 1. Arrow of Time Analysis ---
+        flow_matrix = self.causality_flow_matrix
+        total_flow_events = np.sum(flow_matrix)
+        asymmetry_score = 0.0
+
+        if total_flow_events > 0:
+            net_flow = np.sum(np.abs(flow_matrix - flow_matrix.T)) / 2
+            asymmetry_score = net_flow / total_flow_events
+            cprint(f"  -> Arrow of Time Asymmetry Score: {asymmetry_score:.4f}", C.SUBHEADER)
+        else:
+            cprint("  -> No causal flow events recorded.", C.SUBHEADER)
+
+        flow_path = os.path.join(report_dir, 'causality_flow.npz')
+        np.savez_compressed(flow_path, flow_matrix=flow_matrix, asymmetry_score=asymmetry_score)
+        cprint(f"  -> Causal flow data saved to '{flow_path}'", C.SUBHEADER)
+
+        # --- Thermodynamics and Complexity Analysis ---
+        if self.entropy_history and self.concentration_history:
+            frames = np.arange(len(self.entropy_history))
+            entropy = np.array(self.entropy_history)
+            concentration = np.array(self.concentration_history)
+
+            thermo_data_path = os.path.join(report_dir, 'thermo_complexity_history.npz')
+            np.savez_compressed(thermo_data_path, frames=frames, entropy=entropy, concentration=concentration)
+            cprint(f"  -> Thermo & Complexity data saved to '{thermo_data_path}'", C.SUBHEADER)
+
+            # Generate a combined plot with two Y-axes
+            fig, ax1 = plt.subplots(figsize=(14, 7))
+
+            # Plot Entropy
+            ax1.set_xlabel("Simulation Step", fontsize=FONT_SIZE_LABEL)
+            ax1.set_ylabel("Global Shannon Entropy (Order)", fontsize=FONT_SIZE_LABEL, color=COLOR_ENTROPY)
+            ax1.plot(frames, entropy, color=COLOR_ENTROPY, label='Entropy (Order)')
+            ax1.tick_params(axis='y', labelcolor=COLOR_ENTROPY)
+            ax1.grid(True, linestyle='--', alpha=0.3)
+
+            # Create second Y-axis
+            ax2 = ax1.twinx()
+            ax2.set_ylabel("Concentration Index (Structure)", fontsize=FONT_SIZE_LABEL, color=COLOR_CONCENTRATION)
+            ax2.plot(frames, concentration, color=COLOR_CONCENTRATION, label='Concentration (Structure)')
+            ax2.tick_params(axis='y', labelcolor=COLOR_CONCENTRATION)
+
+            lines, labels = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax2.legend(lines + lines2, labels + labels2, loc='best')
+
+            fig.suptitle("Evolution of Order and Structure", fontsize=FONT_SIZE_TITLE, weight='bold')
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+            combo_plot_path = os.path.join(report_dir, 'thermo_complexity_evolution.png')
+            fig.savefig(combo_plot_path, dpi=150)
+            plt.close(fig)
+            cprint(f"  -> Combined evolution plot saved to '{combo_plot_path}'", C.SUBHEADER)
+
+        cprint("--- Report Generation Complete ---", C.WARNING)
+# causality.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Source Abstraction"
+# - The `evolve` method in all causality strategies is refactored to accept
+#   a generic, real-valued `interaction_source` numpy array instead of
+#   the complex `psi` field.
+# - This completely decouples the causality logic from the underlying physics
+#   of the field. The module no longer cares if the source is |psi|^2 from a
+#   scalar field or psi_bar*psi from a spinor field.
+# - The name of the module is now more accurate: it doesn't "evolve" anything,
+#   it "computes" the emergent graph. The classes are renamed for clarity.
+
+import numpy as np
+from abc import ABC, abstractmethod
+from termcolor import cprint
+
+class AbstractCausalityComputer(ABC):
+    """
+    Abstract Base Class for all emergent causality strategies.
+
+    Defines the interface for modules that compute the instantaneous
+    directed causal graph G_causal(t) from a scalar interaction source field
+    and the static undirected substrate.
+    """
+    def __init__(self):
+        self.strategy_name = "Abstract"
+
+    @abstractmethod
+    def compute(self, interaction_source: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
+        """
+        Computes the INCOMING directed adjacency list for the current frame.
+
+        Args:
+            interaction_source (np.ndarray): The real-valued scalar field that
+                                             drives causality (e.g., energy density).
+            undirected_neighbors (list): The static substrate's undirected adjacency list.
+            num_points (int): The total number of points in the substrate.
+
+        Returns:
+            list: An INCOMING directed adjacency list, where incoming_neighbors[i]
+                  contains a list of nodes `j` such that the emergent causal
+                  edge is defined as j -> i.
+        """
+        pass
+
+class ConvergentCausality(AbstractCausalityComputer):
+    """
+    HYPOTHESIS 1: "Convergent Flow" or "Uphill Causality"
+
+    Causality flows from lower source intensity to higher intensity regions.
+    This can be interpreted as information concentrating towards areas of high
+    "presence" or mass-energy, akin to a gravitational pull.
+    """
+    def __init__(self):
+        super().__init__()
+        self.strategy_name = "Convergent (Uphill)"
+        cprint(f"   -> Causality Strategy: {self.strategy_name}", 'cyan')
+
+    def compute(self, interaction_source: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
+        """
+        Generates an incoming directed graph based on the rule:
+        An edge j -> i exists if the source intensity at i is greater than at j.
+        """
+        incoming_neighbors = [[] for _ in range(num_points)]
+
+        # The logic is now cleaner as it operates directly on the source.
+        for i in range(num_points):
+            source_i = interaction_source[i]
+            for j in undirected_neighbors[i]:
+                # To avoid double-counting, we only process pairs where i > j
+                if i > j:
+                    source_j = interaction_source[j]
+
+                    if source_i > source_j:
+                        # Source at i is higher, so flow is j -> i.
+                        incoming_neighbors[i].append(j)
+                    elif source_j > source_i:
+                        # Source at j is higher, so flow is i -> j.
+                        incoming_neighbors[j].append(i)
+                    # If sources are equal, no causal edge is formed.
+
+        return incoming_neighbors
+
+class DivergentCausality(AbstractCausalityComputer):
+    """
+    HYPOTHESIS 2: "Divergent Flow" or "Downhill Causality"
+
+    Causality flows from higher source intensity to lower intensity regions.
+    This can be interpreted as presence/energy dissipating or flowing outwards,
+    like heat or a radiating source.
+    """
+    def __init__(self):
+        super().__init__()
+        self.strategy_name = "Divergent (Downhill)"
+        cprint(f"   -> Causality Strategy: {self.strategy_name}", 'cyan')
+
+    def compute(self, interaction_source: np.ndarray, undirected_neighbors: list, num_points: int) -> list:
+        incoming_neighbors = [[] for _ in range(num_points)]
+
+        for i in range(num_points):
+            source_i = interaction_source[i]
+            for j in undirected_neighbors[i]:
+                if i > j:
+                    source_j = interaction_source[j]
+
+                    if source_i > source_j:
+                        # Source at i is higher, so flow is i -> j.
+                        incoming_neighbors[j].append(i)
+                    elif source_j > source_i:
+                        # Source at j is higher, so flow is j -> i.
+                        incoming_neighbors[i].append(j)
+
+        return incoming_neighbors
+
+# --- Example Usage for Testing ---
+if __name__ == "__main__":
+    cprint("\n--- Testing causality.py v16.0 ---", 'yellow', attrs=['bold'])
+
+    # Test Setup
+    mock_neighbors = [[1, 3], [0, 2], [1, 3], [0, 2]]
+    mock_num_points = 4
+    # The module now takes the interaction source directly.
+    mock_source = np.array([1.0, 4.0, 16.0, 9.0])
+    cprint(f"Test substrate: square graph. Interaction source: {mock_source}", 'white')
+
+    # Test 1: Convergent
+    convergent_computer = ConvergentCausality()
+    incoming_graph_conv = convergent_computer.compute(mock_source, mock_neighbors, mock_num_points)
+    expected_conv = [[], [0], [1, 3], [0]] # Flow is 0->1, 0->3, 1->2, 3->2
+    assert incoming_graph_conv == expected_conv, f"Convergent test failed! Got {incoming_graph_conv}"
+    cprint("Convergent Test Passed!", 'green')
+
+    # Test 2: Divergent
+    divergent_computer = DivergentCausality()
+    incoming_graph_div = divergent_computer.compute(mock_source, mock_neighbors, mock_num_points)
+    expected_div = [[1, 3], [2], [], [2]] # Flow is 1->0, 3->0, 2->1, 2->3
+    assert incoming_graph_div == expected_div, f"Divergent test failed! Got {incoming_graph_div}"
+    cprint("Divergent Test Passed!", 'green')
+
+    cprint("\n--- All tests for causality.py passed! ---", 'yellow', attrs=['bold'])
+# compiler.py v1.0
+"""
+Project Genesis - Video Compilation Module
+------------------------------------------
+- Собирает PNG-кадры в видеофайл MP4 с помощью ffmpeg.
+- Обрабатывает ошибки и удаляет временные файлы.
+"""
+import subprocess
+import os
+import shutil
+from termcolor import cprint
+
+def compile_video(frames_dir, output_filename, framerate=25, keep_frames=False):
+    """Собирает видео из кадров."""
+    print("\n--- STAGE 3: COMPILING VIDEO ---")
+    if not os.path.exists(frames_dir) or not os.listdir(frames_dir):
+        cprint(f"Error: Frames directory '{frames_dir}' is empty or does not exist.", 'red')
+        return
+
+    ffmpeg_command = [
+        'ffmpeg',
+        '-framerate', str(framerate),
+        '-i', os.path.join(frames_dir, 'frame_%05d.png'),
+        '-c:v', 'libx264',      # Хороший кодек
+        '-pix_fmt', 'yuv420p',  # Для совместимости с большинством плееров
+        '-y',                   # Перезаписывать файл без вопроса
+        output_filename
+    ]
+
+    try:
+        print(f"Running FFMPEG to create '{output_filename}'...")
+        result = subprocess.run(ffmpeg_command, capture_output=True, text=True, check=True)
+        cprint(f"Video compilation successful!", 'green')
+    except subprocess.CalledProcessError as e:
+        cprint("\n--- FFMPEG ERROR ---", 'red')
+        print(e.stderr)
+        cprint("--------------------", 'red')
+    except FileNotFoundError:
+        cprint("\nError: `ffmpeg` command not found.", 'red')
+        cprint("Please install ffmpeg and ensure it is in your system's PATH.", 'yellow')
+
+    finally:
+        if not keep_frames and os.path.exists(frames_dir):
+            print(f"Cleaning up temporary frames directory '{frames_dir}'...")
+            shutil.rmtree(frames_dir)
+# compile_video.py v10.5 - "Timestamp Perfect"
+"""
+Project Genesis - Video Compilation Module
+------------------------------------------
+- v10.5:
+  - Добавлена директива 'duration' в file_list.txt для concat demuxer.
+  - Это решает проблему с отбрасыванием кадров (dropping frames) и
+    неправильными таймстампами (PTS/DTS) в FFMPEG.
+  - Упрощена и сделана более надежной основная команда ffmpeg.
+"""
+import subprocess
+import os
+import shutil
+import json
+import argparse
+import glob
+from termcolor import cprint
+
+def get_frame_number_for_sort(path):
+    """Извлекает номер кадра из имени файла для корректной числовой сортировки."""
+    try:
+        return int(os.path.basename(path).split('_')[-1].split('.')[0])
+    except (IndexError, ValueError):
+        return -1
+
+def compile_video_worker(frames_dir, output_filename, framerate=30, keep_frames=False):
+    """Воркер-функция, использующая concat demuxer с явным указанием длительности кадров."""
+
+    if not os.path.exists(frames_dir) or not os.path.isdir(frames_dir):
+        cprint(f"Error: Frames directory '{frames_dir}' not found.", 'red')
+        return
+
+    frame_files = glob.glob(os.path.join(frames_dir, 'frame_*.png'))
+    if not frame_files:
+        cprint(f"Error: No .png frames found in '{frames_dir}'. Nothing to compile.", 'red')
+        return
+
+    frame_files.sort(key=get_frame_number_for_sort)
+    cprint(f"Found {len(frame_files)} frames to compile with framerate {framerate} fps.", 'yellow')
+
+    list_filename = os.path.join(frames_dir, "ffmpeg_file_list.txt")
+    frame_duration = 1.0 / framerate
+
+    try:
+        # --- НОВОЕ: Добавляем директиву duration ---
+        with open(list_filename, 'w', encoding='utf-8') as f:
+            for filename in frame_files:
+                safe_path = os.path.abspath(filename).replace('\\', '/')
+                f.write(f"file '{safe_path}'\n")
+                f.write(f"duration {frame_duration}\n")
+
+        # FFMPEG может потребовать, чтобы последний кадр не имел duration,
+        # но современные версии обычно справляются. Этот формат самый надежный.
+
+        # --- Собираем ФИНАЛЬНУЮ, САМУЮ НАДЕЖНУЮ команду FFMPEG ---
+        ffmpeg_command = [
+            'ffmpeg',
+            '-y',                   # Перезаписывать без вопроса
+            '-f', 'concat',         # Используем concat demuxer
+            '-safe', '0',           # Разрешить абсолютные пути
+            '-i', list_filename,    # Входной файл - наш список
+
+            # Настройки кодека остаются теми же
+            '-c:v', 'libx264',
+            '-preset', 'slow',
+            '-profile:v', 'high',
+            '-crf', '23',
+            '-coder', '1',
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+
+            # Явно указываем частоту кадров ВЫХОДНОГО файла
+            '-r', str(framerate),
+
+            output_filename
+        ]
+
+        cprint(f"Running FFMPEG with explicit frame durations...", 'yellow')
+        print(f"Command: {' '.join(ffmpeg_command)}")
+        print("--- FFMPEG LOG START ---")
+
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding='utf-8',
+            errors='ignore' # Игнорируем ошибки кодировки, если ffmpeg выводит "мусор"
+        )
+
+        for line in iter(process.stdout.readline, ''):
+            print(line.strip())
+
+        process.stdout.close()
+        return_code = process.wait()
+        print("--- FFMPEG LOG END ---")
+
+        if return_code != 0:
+            cprint(f"\nFFMPEG process failed with return code {return_code}.", 'red')
+            cprint("Temporary frames were NOT deleted.", 'cyan')
+            return
+
+        cprint(f"\nVideo compilation successful! Output saved to '{os.path.abspath(output_filename)}'", 'green')
+
+        if not keep_frames and os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+            cprint(f"Cleaning up frames directory '{frames_dir}'...", 'yellow')
+            shutil.rmtree(frames_dir)
+
+    except Exception as e:
+        cprint(f"\nAn unexpected error occurred: {e}", 'red')
+    finally:
+        if os.path.exists(list_filename):
+            os.remove(list_filename)
+
+
+if __name__ == "__main__":
+    # ... (Этот блок остается без изменений)
+    parser = argparse.ArgumentParser(description="Compile a YouTube-ready video from Project Genesis frames.")
+    parser.add_argument('run_directory', type=str, help="Path to the run directory.")
+    parser.add_argument('-fr', '--framerate', type=int, default=30, help="Framerate of the output video.")
+    parser.add_argument('--keep-frames', default=True, help="Do not delete the PNG frames folder.")
+    args = parser.parse_args()
+
+    RUN_DIR = args.run_directory
+    FRAMES_DIR = os.path.join(RUN_DIR, 'frames')
+    METADATA_PATH = os.path.join(RUN_DIR, 'metadata.json')
+
+    if not os.path.exists(METADATA_PATH):
+        cprint(f"Error: metadata.json not found in '{RUN_DIR}'.", 'red'); exit()
+    with open(METADATA_PATH, 'r') as f:
+        metadata = json.load(f)
+
+    cprint(f"\n--- STAGE 3: COMPILING VIDEO for run '{metadata['run_name']}' ---", 'cyan')
+
+    output_filename = os.path.join(RUN_DIR, f"genesis_{metadata['run_name']}_v10.5.mp4")
+    keep_frames_flag = args.keep_frames
+
+    compile_video_worker(FRAMES_DIR, output_filename, args.framerate, keep_frames_flag)
+
+    cprint("--- Compilation Complete ---", 'cyan')
+# field.py v16.0
+# Part of Project Genesis: Breathing Causality
+# New in v16.0: "The Field Abstraction"
+# - Introduces an abstract base class `AbstractField` to define a common
+#   interface for all physical fields in the simulation.
+# - Implements `ScalarField` as the first concrete class, encapsulating
+#   the behavior of our original single-component psi field.
+# - Crucially, it separates the field's internal state (`values`) from
+#   the quantity that drives causality (`get_interaction_source`), preparing
+#   the architecture for more complex fields like spinors.
+
+from abc import ABC, abstractmethod
+import numpy as np
+from termcolor import cprint
+
+class AbstractField(ABC):
+    """
+    Abstract Base Class for all physical fields.
+
+    This class defines the essential properties and methods that any field
+    in the Project Genesis simulation must implement. It handles the storage
+    of field values and enforces normalization.
+
+    Attributes:
+        values (np.ndarray): A complex numpy array of shape (num_points, num_components)
+                             holding the state of the field at each substrate node.
+        num_points (int): The number of nodes in the substrate.
+        num_components (int): The number of components for this field type (e.g., 1 for scalar, 4 for Dirac spinor).
+    """
+    def __init__(self, num_points: int, num_components: int):
+        if num_points < 0 or num_components <= 0:
+            raise ValueError("Number of points and components must be positive.")
+        self.num_points = num_points
+        self.num_components = num_components
+
+        # Initialize field values to a zero state.
+        self.values = np.zeros((self.num_points, self.num_components), dtype=np.complex128)
+        cprint(f"  > Field object created: {self.__class__.__name__} ({self.num_points} points, {self.num_components} components)", 'grey')
+
+    def normalize(self):
+        """
+        Normalizes the total probability density of the field to 1.
+        This ensures the conservation of the field's total "presence"
+        across the simulation, as required by unitarity. The norm is calculated
+        across all points and all components.
+        """
+        # np.linalg.norm works correctly on multi-dimensional arrays.
+        norm = np.linalg.norm(self.values)
+        if norm > 1e-12:
+            self.values /= norm
+        else:
+            # A failsafe for a zero-field state to avoid division by zero.
+            # This case should ideally not be reached in a physically meaningful simulation.
+            pass
+
+    @abstractmethod
+    def get_interaction_source(self) -> np.ndarray:
+        """
+        Calculates and returns the scalar field that acts as the source for
+        emergent causality. This is a critical abstraction, as different fields
+        might influence causality in different ways.
+
+        Returns:
+            np.ndarray: A real-valued numpy array of shape (num_points,)
+                        representing the "causal charge" at each node.
+        """
+        pass
+
+class ScalarField(AbstractField):
+    """
+    A concrete implementation for a single-component complex scalar field (a boson field).
+    This class represents the original `psi` field from previous versions.
+    """
+    def __init__(self, num_points: int):
+        # A scalar field has exactly one component.
+        super().__init__(num_points, num_components=1)
+
+    def get_interaction_source(self) -> np.ndarray:
+        """
+        For a simple scalar field, the source of interaction (e.g., gravity)
+        is its energy density, which is proportional to the squared amplitude |psi|^2.
+
+        Returns:
+            np.ndarray: A real-valued array of shape (num_points,) containing |psi|^2 at each node.
+        """
+        # .ravel() efficiently converts the (N, 1) `values` array to a flat (N,) array.
+        return np.abs(self.values.ravel())**2
+
+# --- Future Extension Point ---
+# When we are ready to implement fermions, we will add the SpinorField class here.
+# It will inherit from AbstractField and provide its own logic.
+#
+# class SpinorField(AbstractField):
+#     def __init__(self, num_points: int):
+#         # A Dirac spinor has 4 components.
+#         super().__init__(num_points, num_components=4)
+#
+#     def get_interaction_source(self) -> np.ndarray:
+#         # For a Dirac field, the source of gravity is not just |psi|^2.
+#         # It would be a more complex Lorentz-invariant scalar, like psi_bar * psi.
+#         # For now, we can placeholder it to return the total probability density.
+#         # This is where the real physics of fermion interaction would be encoded.
+#         return np.sum(np.abs(self.values)**2, axis=1)
+#
+# -----------------------------
+
+# This block allows for independent testing of the module.
+if __name__ == "__main__":
+    cprint("\n--- Testing field.py v16.0 ---", 'yellow', attrs=['bold'])
+
+    # Test 1: Create a ScalarField
+    cprint("1. Creating a ScalarField for 100 points...", 'cyan')
+    try:
+        scalar_field = ScalarField(num_points=100)
+        assert scalar_field.values.shape == (100, 1)
+        cprint("  > SUCCESS: ScalarField created with correct shape.", 'green')
+    except Exception as e:
+        cprint(f"  > FAILED: {e}", 'red')
+
+    # Test 2: Test normalization
+    cprint("2. Testing normalization...", 'cyan')
+    scalar_field.values[:] = 1.0 + 1.0j # Set all values to be non-normalized
+    initial_norm_sq = np.sum(np.abs(scalar_field.values)**2)
+    cprint(f"   - Initial |psi|^2 sum: {initial_norm_sq:.2f}", 'grey')
+    scalar_field.normalize()
+    final_norm_sq = np.sum(np.abs(scalar_field.values)**2)
+    cprint(f"   - Final |psi|^2 sum: {final_norm_sq:.2f}", 'grey')
+    assert np.isclose(final_norm_sq, 1.0)
+    cprint("  > SUCCESS: Normalization works correctly.", 'green')
+
+    # Test 3: Test interaction source
+    cprint("3. Testing get_interaction_source...", 'cyan')
+    # After normalization, each |psi|^2 should be 1.0 / 100
+    expected_source_value = 1.0 / 100
+    source = scalar_field.get_interaction_source()
+    assert source.shape == (100,)
+    assert np.allclose(source, expected_source_value)
+    cprint("  > SUCCESS: Interaction source is calculated correctly as |psi|^2.", 'green')
+
+    cprint("\n--- All tests for field.py passed! ---", 'yellow', attrs=['bold'])
+# initial_conditions.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Field Object Generation"
+# - The `generate` method in all classes now returns a fully instantiated
+#   object of a class inheriting from `AbstractField` (e.g., `ScalarField`).
+# - This change decouples the main orchestrator from the specifics of
+#   how a field is initialized.
+# - The logic for generating the actual numerical values remains the same,
+#   but is now assigned to the `.values` attribute of the created field object.
+
+from abc import ABC, abstractmethod
+import numpy as np
+from termcolor import cprint
+
+# --- Import dependencies from the new architecture ---
+from topologies import TopologyData
+from field import AbstractField, ScalarField # NEW: Import field classes
+
+class BaseInitialState(ABC):
+    """
+    Abstract base class for all initial state generators.
+    Enforces the contract that all generators must return a valid Field object.
+    """
+    @abstractmethod
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        """
+        Generates and returns a field object appropriate for this initial condition.
+
+        Args:
+            topology_data: The static substrate on which the field exists.
+
+        Returns:
+            An instance of a class derived from AbstractField.
+        """
+        raise NotImplementedError
+
+class PrimordialSoupState(BaseInitialState):
+    """
+    Generates a `ScalarField` in a completely random state (maximum entropy).
+    Represents a "hot", unstructured early universe.
+    """
+    def __init__(self):
+        cprint(f"   -> IC Strategy: Primordial Soup (yields ScalarField)", 'cyan')
+
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        """Generates a normalized random complex scalar field."""
+        # 1. Create the appropriate field object.
+        field = ScalarField(topology_data.num_points)
+
+        # 2. Generate the random values for its state.
+        # This is a standard way to produce a complex field with a uniform phase distribution.
+        random_values = (np.random.randn(field.num_points) +
+                         1j * np.random.randn(field.num_points))
+
+        # Assign the values. Note that we need to reshape to (N, 1) for a scalar field.
+        field.values = random_values.reshape(-1, 1)
+
+        # 3. Let the field object handle its own normalization.
+        field.normalize()
+
+        return field
+
+class WavePacketState(BaseInitialState):
+    """
+    Generates a `ScalarField` containing a coherent Gaussian wave packet
+    with an initial momentum. Represents a single, isolated particle.
+    """
+    def __init__(self, momentum_kick: float = 30.0, packet_width_ratio: float = 0.1):
+        cprint(f"   -> IC Strategy: Coherent Wave Packet (yields ScalarField)", 'cyan')
+        self.momentum_kick = momentum_kick
+        self.packet_width_ratio = packet_width_ratio
+
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        field = ScalarField(topology_data.num_points)
+        points = topology_data.points
+
+        if field.num_points == 0:
+            return field
+
+        # --- Logic for calculating values is unchanged ---
+        grid_span = np.max(points, axis=0) - np.min(points, axis=0)
+        grid_width = np.max(grid_span) if grid_span.size > 0 else 1.0
+        center = np.mean(points, axis=0)
+        distances_sq = np.sum((points - center)**2, axis=1)
+        sigma_sq = (grid_width * self.packet_width_ratio)**2
+        if sigma_sq < 1e-9: sigma_sq = 1.0
+        amplitude = np.exp(-distances_sq / (2.0 * sigma_sq))
+        phase = np.exp(1j * points[:, 0] * self.momentum_kick) # Momentum along x-axis
+        psi_values = amplitude * phase
+
+        field.values = psi_values.reshape(-1, 1)
+        field.normalize()
+
+        return field
+
+class VortexState(BaseInitialState):
+    """
+    Generates a `ScalarField` containing a single topological vortex defect
+    in a "cold" vacuum. Represents a stable, topological quasi-particle.
+    """
+    def __init__(self, position_ratio=(0.5, 0.5)):
+        cprint(f"   -> IC Strategy: Single Topological Vortex (yields ScalarField)", 'cyan')
+        self.position_ratio = np.array(position_ratio)
+
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        field = ScalarField(topology_data.num_points)
+        points = topology_data.points
+
+        if field.num_points == 0:
+            return field
+
+        # --- Logic for calculating values is unchanged ---
+        min_coords = np.min(points, axis=0)
+        max_coords = np.max(points, axis=0)
+        center_coords = min_coords + (max_coords - min_coords) * self.position_ratio
+        relative_coords = points - center_coords
+
+        if topology_data.dimensionality == 2:
+            angles = np.arctan2(relative_coords[:, 1], relative_coords[:, 0])
+            phase_profile = np.exp(1j * angles)
+        else:
+            phase_profile = np.ones(field.num_points, dtype=complex)
+
+        distances = np.linalg.norm(relative_coords, axis=1)
+        amplitude_profile = np.tanh(distances / 2.0)
+        psi_values = amplitude_profile * phase_profile
+
+        field.values = psi_values.reshape(-1, 1)
+        field.normalize()
+
+        # A final check in case normalization fails for a perfectly centered vortex
+        if np.linalg.norm(field.values) < 1e-9:
+            uniform_values = np.ones(field.num_points)
+            field.values = uniform_values.reshape(-1, 1)
+            field.normalize()
+
+        return field
+
+class SeededSoupState(BaseInitialState):
+    """
+    Generates a Primordial Soup with a small, localized "seed" of order.
+    """
+    def __init__(self, seed_strength: float = 5.0, seed_size: int = 1):
+        """
+        Args:
+            seed_strength: How much higher the amplitude in the seed is vs the background.
+            seed_size: The "radius" of the seed in graph steps (0=1 node, 1=center+neighbors, etc).
+        """
+        cprint(f"   -> IC Strategy: Seeded Soup (strength={seed_strength}, size={seed_size})", 'cyan')
+        self.seed_strength = seed_strength
+        self.seed_size = seed_size
+
+    def generate(self, topology_data: TopologyData) -> AbstractField:
+        # 1. Start with a standard primordial soup.
+        field = ScalarField(topology_data.num_points)
+        psi_values = (np.random.randn(field.num_points) + 
+                      1j * np.random.randn(field.num_points))
+        
+        # 2. Find the center and create the seed region.
+        # We find the geometric center of the points for a visually central seed.
+        center_point = np.mean(topology_data.points, axis=0)
+        distances = np.linalg.norm(topology_data.points - center_point, axis=1)
+        center_node_idx = np.argmin(distances)
+        
+        # Use Breadth-First Search (BFS) to find all nodes within `seed_size` steps.
+        seed_indices = {center_node_idx}
+        q = [center_node_idx]
+        visited = {center_node_idx}
+        for _ in range(self.seed_size):
+            if not q: break
+            new_q = []
+            for node in q:
+                for neighbor in topology_data.neighbors[node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        seed_indices.add(neighbor)
+                        new_q.append(neighbor)
+            q = new_q
+        
+        seed_indices = list(seed_indices)
+        cprint(f"   -> Placing a seed with {len(seed_indices)} nodes at the center.", 'grey')
+
+        # 3. Enhance the seed region.
+        # Increase amplitude in the seed region.
+        # We work with complex numbers directly, not just amplitudes.
+        seed_base_value = self.seed_strength * (1 + 1j) # An arbitrary complex value
+        psi_values[seed_indices] += seed_base_value
+
+        # Make the phase in the seed region coherent (all pointing the same way).
+        # We can do this by adding a large real number, for instance.
+        psi_values[seed_indices] += self.seed_strength
+        
+        # 4. Assign to field and normalize globally.
+        field.values = psi_values.reshape(-1, 1)
+        field.normalize()
+        
+        return field
+    
+
+# --- This block allows for independent testing of the module ---
+if __name__ == "__main__":
+    from topologies import generate_crystal_topology
+
+    cprint("\n--- Testing initial_conditions.py v16.0 ---", 'yellow', attrs=['bold'])
+
+    # Setup a realistic test environment
+    topo = generate_crystal_topology(width=20, height=20)
+
+    # Test each generator
+    generators = [
+        ("Primordial Soup", PrimordialSoupState()),
+        ("Wave Packet", WavePacketState()),
+        ("Vortex", VortexState())
+    ]
+
+    for name, gen in generators:
+        cprint(f"1. Testing {name} generator...", 'cyan')
+        try:
+            field_object = gen.generate(topo)
+
+            # Check 1: Is it the right object type?
+            assert isinstance(field_object, AbstractField)
+            cprint("  > SUCCESS: Correct object type returned.", 'green')
+
+            # Check 2: Is it normalized?
+            total_prob = np.sum(field_object.get_interaction_source())
+            assert np.isclose(total_prob, 1.0)
+            cprint(f"  > SUCCESS: Field is correctly normalized (|source|^2 sum = {total_prob:.4f}).", 'green')
+
+            # Check 3: Does it have the right shape?
+            assert field_object.values.shape == (topo.num_points, 1)
+            cprint("  > SUCCESS: Field has correct shape.", 'green')
+
+        except Exception as e:
+            cprint(f"  > FAILED: {name} test failed with error: {e}", 'red')
+
+    cprint("\n--- All tests for initial_conditions.py passed! ---", 'yellow', attrs=['bold'])
+# inspect_npz.py
+# A simple utility to inspect the contents of a .npz file.
+
+import numpy as np
+import argparse
+from termcolor import cprint
+import os
+
+def inspect_file(file_path):
+    """Loads a .npz file and prints information about its contents."""
+    if not os.path.exists(file_path):
+        cprint(f"Error: File not found at '{file_path}'", 'red')
+        return
+
+    cprint(f"\n--- Inspecting file: {os.path.basename(file_path)} ---", 'yellow')
+
+    try:
+        with np.load(file_path, allow_pickle=True) as data:
+            cprint("Archive successfully loaded.", 'green')
+
+            # .files - это атрибут, который содержит список всех ключей (имен массивов) в архиве.
+            keys = data.files
+
+            if not keys:
+                cprint("The archive is empty (contains no arrays).", 'yellow')
+                return
+
+            cprint(f"Found {len(keys)} array(s) with the following keys:", 'cyan')
+            for key in keys:
+                array = data[key]
+                # Получаем информацию о массиве
+                shape = array.shape
+                dtype = array.dtype
+
+                # Специальная обработка для скалярных массивов, созданных через np.array(...)
+                if shape == ():
+                    shape_str = "scalar"
+                    value_preview = f"value={array.item()}"
+                else:
+                    shape_str = str(shape)
+                    value_preview = "" # Не будем выводить большие массивы
+
+                print(f"  - Key: '{key}' | Shape: {shape_str} | DType: {dtype} {value_preview}")
+
+    except Exception as e:
+        cprint(f"An error occurred while trying to read the file: {e}", 'red')
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Inspect the contents of a single .npz data frame from a Project Genesis run."
+    )
+    parser.add_argument('run_directory', type=str, help="Path to the run directory.")
+    parser.add_argument('frame_number', type=int, help="The specific frame number to inspect.")
+    args = parser.parse_args()
+
+    data_file_path = os.path.join(
+        args.run_directory,
+        'data',
+        f"frame_{args.frame_number:05d}.npz"
+    )
+
+    inspect_file(data_file_path)
+# main.py v19.0
+# Part of Project Genesis: Breathing Causality
+# v19.0: "Research Mode"
+# - Adds a new `--fast-mode` command-line argument. When enabled, the simulation
+#   skips the computationally expensive saving of per-frame data files.
+# - This is ideal for quickly scanning parameter spaces, where only the final
+#   analytics report (the graph) is needed.
+# - The interaction strength is now a `base_strength` parameter, reflecting
+#   the new physics in the simulation engine.
+
+import numpy as np
+import argparse
+import os
+import shutil
+import time
+import json
+from tqdm import tqdm
+
+# --- Import all components (no changes in imports) ---
+from styling import C, cprint
+from topologies import TopologyFactory
+from field import ScalarField
+from initial_conditions import PrimordialSoupState, WavePacketState, VortexState, SeededSoupState
+from causality import ConvergentCausality, DivergentCausality
+from simulation import Simulation
+from tracker import ParticleTracker
+from analytics import GlobalAnalytics
+
+def main():
+    """Main function to run the simulation orchestrator."""
+    parser = argparse.ArgumentParser(description="Run the Project Genesis v19.0 simulation.")
+    
+    parser.add_argument('-s', '--seed', type=int, default=None, help="Seed for reproducibility.")
+    parser.add_argument('-f', '--frames', type=int, default=1000, help="Max number of simulation frames.")
+    parser.add_argument('--topo', type=str, default='crystal', choices=['crystal'], help="Type of substrate topology.")
+    parser.add_argument('-W', '--width', type=int, default=80, help="Width for crystal topology.")
+    parser.add_argument('-H', '--height', type=int, default=60, help="Height for crystal topology.")
+    parser.add_argument('--ic', type=str, default='soup', 
+                        choices=['soup', 'seeded', 'packet', 'vortex'], 
+                        help="Initial condition type.")
+    parser.add_argument('--seed_strength', type=float, default=5.0, help="Strength of the seed for 'seeded' IC.")
+    parser.add_argument('--seed_size', type=int, default=1, help="Radius of the seed for 'seeded' IC.")
+    parser.add_argument('-c', '--causality', type=str, default='conv', choices=['conv', 'div'], help="Causality computation rule.")
+    parser.add_argument('-is', '--strength', type=float, default=200.0, help="Base interaction strength for the dynamic potential.")
+    parser.add_argument('--fast', action='store_true', help="Enable fast mode: skip saving per-frame data to disk.")
+    
+    args = parser.parse_args()
+
+    # --- Setup Run Environment (updated run_name) ---
+    SEED = args.seed if args.seed is not None else np.random.randint(0, 1_000_000)
+    np.random.seed(SEED)
+
+    FIELD_TYPE = 'scalar' # Hardcoded for now
+
+    mode_str = "FAST" if args.fast else "FULL"
+    ic_str = args.ic
+    if args.ic == 'seeded':
+        ic_str = f"seeded{args.seed_strength}s{args.seed_size}r"
+    run_name = f"SEED_{SEED}_{args.topo}{args.width}x{args.height}_s{args.strength}_{ic_str}_{args.causality}"
+    RUN_DIR = f"run_{run_name}"
+    DATA_DIR = os.path.join(RUN_DIR, 'data')
+    
+    cprint(f"\n--- PROJECT GENESIS v19.0: LOCAL CATALYSIS ---", C.HEADER, attrs=C.BOLD_ATTR)
+    cprint(f"Starting run: {run_name}", C.INFO)
+
+    if os.path.exists(RUN_DIR):
+        cprint(f"Warning: Run directory '{RUN_DIR}' already exists. Overwriting.", C.WARNING)
+        shutil.rmtree(RUN_DIR)
+    os.makedirs(DATA_DIR)
+    
+    # --- Build Components ---
+    cprint("\n--- STAGE 1: ASSEMBLING COMPONENTS ---", C.SUBHEADER, attrs=C.BOLD_ATTR)
+    
+    topo_params = {'width': args.width, 'height': args.height}
+    topology_data = TopologyFactory.create(args.topo, topo_params)
+    
+    if args.ic == 'soup': 
+        initial_state_gen = PrimordialSoupState()
+    elif args.ic == 'seeded':
+        initial_state_gen = SeededSoupState(seed_strength=args.seed_strength, seed_size=args.seed_size)
+    elif args.ic == 'packet': 
+        initial_state_gen = WavePacketState()
+    elif args.ic == 'vortex': 
+        initial_state_gen = VortexState()
+    else: 
+        raise ValueError(f"Unknown initial condition: {args.ic}")
+    
+    if FIELD_TYPE == 'scalar':
+        field = ScalarField(topology_data.num_points)
+    # elif FIELD_TYPE == 'spinor':
+    #     field = SpinorField(topology_data.num_points)    if args.causality == 'conv': causality_computer = ConvergentCausality()
+    else: causality_computer = DivergentCausality()
+
+    # Inject the new base_interaction_strength parameter
+    sim = Simulation(topology_data, field, causality_computer, base_interaction_strength=args.strength)
+
+    analytics = GlobalAnalytics(sim.num_points)
+    # Tracker can be skipped in fast mode
+    tracker = None if args.fast else ParticleTracker()
+
+    # --- Metadata (unchanged) ---
+    substrate_path = os.path.join(RUN_DIR, "substrate.npz")
+    np.savez_compressed(
+        substrate_path,
+        points=topology_data.points,
+        neighbors=np.array(topology_data.neighbors, dtype=object)
+    )
+    metadata = { 'run_name': run_name, 'seed': SEED, 'max_frames': args.frames, 'base_interaction_strength': args.strength,
+                 'field_type': 'scalar', 'topology_type': args.topo, 'topology_params': topo_params, 'initial_condition': args.ic,
+                 'causality_rule': causality_computer.strategy_name, 'final_frame_count': 0 }
+
+    cprint("\n--- STAGE 2: SIMULATING ---", C.SUBHEADER, attrs=C.BOLD_ATTR)
+    start_time = time.time()
+    final_frame_count = 0
+
+    try:
+        # --- The Main Simulation Loop ---
+        for frame in tqdm(range(args.frames), desc=f"Simulating ({args.causality} flow)", bar_format="{l_bar}{bar:30}{r_bar}"):
+            causal_graph = sim.update_step()
+            
+            # Analytics are always computed as they are lightweight
+            interaction_source = sim.field.get_interaction_source()
+            analytics.analyze_step(interaction_source, causal_graph, frame + 1)
+
+            # --- Conditional saving ---
+            if not args.fast:
+                # Particle tracking and saving is only done in full mode
+                stable_attractors = tracker.analyze_frame(interaction_source, sim.field.values, sim.substrate, frame + 1)
+                
+                frame_filename = os.path.join(DATA_DIR, f"frame_{frame+1:05d}.npz")
+                np.savez_compressed(
+                    frame_filename,
+                    field_values=sim.field.values,
+                    causal_graph=np.array(causal_graph, dtype=object),
+                    stable_attractors=np.array(stable_attractors, dtype=object)
+                )
+            final_frame_count = frame + 1
+
+    except KeyboardInterrupt:
+        cprint("\nSimulation interrupted by user.", C.WARNING)
+    finally:
+        sim.close()
+        
+    # --- Finalize and Generate Reports ---
+    cprint(f"\nSimulation finished at frame {final_frame_count}.", C.SUCCESS)
+    print(f"Total simulation time: {time.time() - start_time:.2f} seconds.")
+
+    metadata['final_frame_count'] = final_frame_count
+    metadata['global_interaction_source_max'] = analytics.global_interaction_source_max
+    with open(os.path.join(RUN_DIR, "metadata.json"), 'w') as f:
+        json.dump(metadata, f, indent=4)
+
+    analytics.generate_report(RUN_DIR)
+    
+    cprint(f"\nRun '{run_name}' complete.", C.HEADER, attrs=C.BOLD_ATTR)
+    if not args.fast:
+        cprint(f"Data saved in '{RUN_DIR}'. To render, run:\n"
+               f"  python render_frames.py {RUN_DIR}", C.SUCCESS)
+    else:
+        cprint(f"Ran in fast mode. Analytics saved in '{os.path.join(RUN_DIR, 'analytics')}'. No frames to render.", C.SUCCESS)
+
+if __name__ == "__main__":
+    main()# renderer_worker.py v16.1
+# Part of Project Genesis: Breathing Causality
+# v16.1: "Colormap Dependency Fix"
+# - CRITICAL FIX: The worker now correctly manages colormaps and passes the
+#   appropriate colormap object to the visualization strategy methods.
+# - It no longer tries to access colormaps as attributes of the strategy object.
+# - Imports `HEATMAP_CMAP` and `PHASE_CMAP` from the central `styling` module.
+
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection, PatchCollection
+from matplotlib.patches import Polygon
+from scipy.interpolate import griddata
+from scipy.spatial import ConvexHull
+import os
+import traceback
+
+# --- Import centralized styling, INCLUDING COLOMAPS ---
+from styling import (
+    COLOR_BACKGROUND, COLOR_SUBSTRATE_EDGES, COLOR_CAUSAL_DARK,
+    COLOR_CAUSAL_LIGHT, COLOR_PARTICLE_HULL_FACE, COLOR_PARTICLE_HULL_EDGE,
+    HEATMAP_CMAP, PHASE_CMAP # IMPORT THE COLOMAPS
+)
+# --- Import visualization strategies ---
+from visualization_strategies import ScalarFieldViz
+
+# --- Worker Caching (no changes) ---
+worker_substrate_data = {}
+worker_log_norm_data = {}
+
+# (init_worker, unwrap_numpy_data, is_valid_array, create_heatmap_and_extent functions remain unchanged)
+def init_worker(points, neighbors, global_interaction_source_max):
+    """Initializes each worker process with large, static data."""
+    worker_substrate_data['points'] = points
+    worker_substrate_data['neighbors'] = neighbors
+    epsilon = 1e-1
+    log_max = np.log1p(global_interaction_source_max / epsilon) if global_interaction_source_max > 0 else 1.0
+    worker_log_norm_data['epsilon'] = epsilon
+    worker_log_norm_data['log_max'] = log_max
+
+def unwrap_numpy_data(d):
+    if hasattr(d, 'ndim') and d.ndim == 0: return d.item()
+    return d
+
+def is_valid_array(arr):
+    if isinstance(arr, np.ndarray): return arr.size > 0
+    if isinstance(arr, (list, tuple)): return len(arr) > 0
+    return False
+
+def create_heatmap_and_extent(points_2d, values, resolution_h, resolution_w):
+    x_coords, y_coords = points_2d[:, 0], points_2d[:, 1]
+    x_min, x_max = x_coords.min(), x_coords.max()
+    y_min, y_max = y_coords.min(), y_coords.max()
+    padding_x = (x_max - x_min) * 0.02
+    padding_y = (y_max - y_min) * 0.02
+    extent = [x_min - padding_x, x_max + padding_x, y_min - padding_y, y_max + padding_y]
+    grid_y, grid_x = np.mgrid[extent[2]:extent[3]:complex(resolution_h), extent[0]:extent[1]:complex(resolution_w)]
+    heatmap = griddata(points_2d, values, (grid_x, grid_y), method='linear', fill_value=0)
+    return heatmap, extent
+
+def render_frame_worker(args_tuple):
+    """Main worker function to render a single simulation frame."""
+    frame_num, data_path, frames_dir, shared_info = args_tuple
+    try:
+        # ... (Loading data and cached data remains the same) ...
+        with np.load(data_path, allow_pickle=True) as data:
+            field_values = unwrap_numpy_data(data['field_values'])
+            causal_graph = unwrap_numpy_data(data.get('causal_graph'))
+            stable_attractors = unwrap_numpy_data(data.get('stable_attractors'))
+        substrate_points = worker_substrate_data.get('points')
+        substrate_neighbors = worker_substrate_data.get('neighbors')
+        epsilon = worker_log_norm_data.get('epsilon')
+        log_max = worker_log_norm_data.get('log_max')
+
+        # --- Select Visualization Strategy (unchanged) ---
+        field_type = shared_info.get('field_type', 'scalar')
+        if field_type == 'scalar':
+            viz_strategy = ScalarFieldViz()
+        else:
+            raise ValueError(f"Unknown field_type for visualization: {field_type}")
+
+        # --- Setup Scene (unchanged) ---
+        FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES, DPI = 19.2, 10.8, 100
+        fig, ax = plt.subplots(figsize=(FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES), dpi=DPI)
+        fig.set_facecolor(COLOR_BACKGROUND)
+        ax.set_facecolor(COLOR_BACKGROUND)
+        ax.set_aspect('equal')
+        points_2d = substrate_points[:, :2]
+
+        # --- RENDER LAYERS (with corrected calls) ---
+
+        # Layer 0: Energy Heatmap
+        heatmap_values = viz_strategy.get_heatmap_values(field_values)
+        log_values = np.log1p(heatmap_values / epsilon)
+        heatmap, extent = create_heatmap_and_extent(points_2d, log_values, resolution_h=540, resolution_w=960)
+        normalized_heatmap = heatmap / log_max if log_max > 1e-9 else heatmap
+        # --- FIX: Use the imported HEATMAP_CMAP directly ---
+        ax.imshow(normalized_heatmap, extent=extent, origin='lower', cmap=HEATMAP_CMAP, zorder=0, aspect='auto', vmin=0.0, vmax=log_max)
+
+        # Layer 1: Static Substrate Edges (unchanged)
+        ax.add_collection(LineCollection(
+            [[points_2d[i], points_2d[j]] for i, n_list in enumerate(substrate_neighbors) for j in n_list if i < j],
+            colors=COLOR_SUBSTRATE_EDGES, linewidths=0.5, zorder=1
+        ))
+
+        # Layer 2: Substrate Nodes
+        # --- FIX: Pass the imported PHASE_CMAP to the strategy method ---
+        node_colors = viz_strategy.get_node_colors(field_values, PHASE_CMAP)
+        ax.scatter(points_2d[:, 0], points_2d[:, 1], s=8, c=node_colors, zorder=3, edgecolors='face', alpha=0.8)
+
+        # ... (Layers 3 and 4 for Causal Graph and Particles remain unchanged) ...
+        # Layer 3: Dynamic Causal Graph
+        if is_valid_array(causal_graph):
+            source_indices = np.concatenate([inc for inc in causal_graph if is_valid_array(inc)])
+            repeat_counts = [len(inc) if is_valid_array(inc) else 0 for inc in causal_graph]
+            target_indices = np.repeat(np.arange(len(causal_graph)), repeat_counts)
+            if source_indices.size > 0:
+                p_sources = points_2d[source_indices]
+                p_targets = points_2d[target_indices]
+                p_midpoints = (p_sources + p_targets) / 2.0
+                dark_segments = np.array(list(zip(p_sources, p_midpoints)))
+                light_segments = np.array(list(zip(p_midpoints, p_targets)))
+                ax.add_collection(LineCollection(dark_segments, colors=COLOR_CAUSAL_DARK, linewidths=0.7, zorder=2))
+                ax.add_collection(LineCollection(light_segments, colors=COLOR_CAUSAL_LIGHT, linewidths=0.7, zorder=2))
+
+        # Layer 4: Stable Particles (Hulls and Text)
+        if is_valid_array(stable_attractors):
+            hulls = []
+            for particle in stable_attractors:
+                node_indices = particle.get('node_indices')
+                if is_valid_array(node_indices) and len(node_indices) >= 3:
+                    hull_points = points_2d[node_indices]
+                    try:
+                        hull = ConvexHull(hull_points)
+                        polygon = Polygon(hull_points[hull.vertices], closed=True)
+                        hulls.append(polygon)
+                        pos_2d = particle["position"][:2]
+                        label = (f"ID:{particle['track_id']} A:{particle['age']}\n"
+                                f"M:{particle['mass']:.3f} Q:{particle['average_charge']:.2f}")
+                        ax.text(pos_2d[0], pos_2d[1] + 1.2, label, color='#FFFFFF', fontsize=9, ha='center', alpha=0.7,
+                                fontweight='bold', zorder=11, bbox=dict(facecolor='black', alpha=0.5, edgecolor='#FFD700'))
+                    except Exception: pass
+            if hulls:
+                ax.add_collection(PatchCollection(hulls, facecolor=COLOR_PARTICLE_HULL_FACE, edgecolor=COLOR_PARTICLE_HULL_EDGE,
+                                                  linewidth=1.5, linestyles='--', alpha=0.25, zorder=4))
+
+        # --- Finalize and Save (unchanged) ---
+        tracked_count = shared_info.get('tracked_particle_count_for_frame', {}).get(str(frame_num), 0)
+        stable_count = len(stable_attractors) if is_valid_array(stable_attractors) else 0
+        title = (f"Genesis v16.1 | {shared_info.get('run_name', '...')} | Field: {field_type.capitalize()} | "
+                 f"Frame: {frame_num} | Tracked: {tracked_count} | Stable: {stable_count}")
+        ax.set_title(title, fontsize=14, color='white', pad=20)
+        ax.set_xlim(extent[0], extent[1]); ax.set_ylim(extent[2], extent[3])
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.tight_layout(pad=0)
+        frame_filename = os.path.join(frames_dir, f"frame_{frame_num:05d}.png")
+        fig.savefig(frame_filename, dpi=DPI, facecolor=fig.get_facecolor())
+        plt.close(fig)
+        return None
+
+    except Exception as e:
+        return f"Frame {frame_num}: Error - {type(e).__name__} - {e}\n{traceback.format_exc()}"
+# render_frames.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Strategy-Aware Orchestrator"
+# - The main orchestrator now reads the `field_type` and the
+#   `global_interaction_source_max` from the `metadata.json` file.
+# - It passes the `field_type` to the worker processes, allowing them
+#   to select the correct visualization strategy.
+# - The `global_interaction_source_max` is used to initialize the worker's
+#   logarithmic normalization, ensuring consistent heatmap brightness.
+
+import numpy as np
+import argparse
+import os
+import glob
+import shutil
+import json
+import multiprocessing as mp
+from tqdm import tqdm
+
+# --- Import centralized styling for console output ---
+from styling import C, cprint
+
+# --- Import the worker function and its initializer ---
+from renderer_worker import render_frame_worker, init_worker
+
+def get_frame_number(path):
+    """Extracts the integer frame number from a file path for correct sorting."""
+    try:
+        return int(os.path.basename(path).split('_')[-1].split('.')[0])
+    except (IndexError, ValueError):
+        return -1
+
+def main():
+    """Main function to orchestrate the frame rendering process."""
+    # Set the multiprocessing start method for cross-platform compatibility
+    if os.name != 'posix':
+        mp.set_start_method('spawn', force=True)
+
+    # --- 1. SETUP ARGUMENT PARSER ---
+    parser = argparse.ArgumentParser(description="Render frames from a Project Genesis v16+ run.")
+    parser.add_argument('run_directory', type=str, help="Path to the run directory.")
+    parser.add_argument('-rs', '--render-step', type=int, default=1, help="Render every N-th frame to speed up preview generation.")
+    args = parser.parse_args()
+
+    # --- 2. DEFINE PATHS AND VALIDATE RUN DIRECTORY ---
+    RUN_DIR = args.run_directory
+    DATA_DIR = os.path.join(RUN_DIR, 'data')
+    FRAMES_DIR = os.path.join(RUN_DIR, 'frames')
+    METADATA_PATH = os.path.join(RUN_DIR, 'metadata.json')
+    SUBSTRATE_PATH = os.path.join(RUN_DIR, 'substrate.npz')
+
+    if not all(os.path.exists(p) for p in [METADATA_PATH, SUBSTRATE_PATH, DATA_DIR]):
+        cprint(f"Error: Run directory '{RUN_DIR}' is incomplete. Missing metadata, substrate, or data.", C.ERROR); exit()
+
+    # --- 3. LOAD METADATA AND HEAVY SUBSTRATE DATA (ONCE) ---
+    try:
+        with open(METADATA_PATH, 'r') as f:
+            metadata = json.load(f)
+
+        cprint(f"\n--- STAGE 2: RENDERING FRAMES for run '{metadata['run_name']}' ---", C.SUBHEADER, attrs=C.BOLD_ATTR)
+
+        cprint("Loading static substrate data...", C.WARNING)
+        with np.load(SUBSTRATE_PATH, allow_pickle=True) as sub_data:
+            substrate_points_np = sub_data['points']
+            substrate_neighbors_list = [list(n) for n in sub_data['neighbors']]
+
+        # CRITICAL STEP: Get the global max source value from metadata for normalization.
+        global_max_source = metadata.get('global_interaction_source_max')
+        if global_max_source is None or global_max_source < 1e-12:
+            cprint(f"Warning: 'global_interaction_source_max' not found in metadata. Visualization might be inconsistent.", C.WARNING)
+            global_max_source = 1.0 # Fallback
+
+    except Exception as e:
+        cprint(f"Error loading metadata or substrate files: {e}", C.ERROR); exit()
+
+    # --- 4. PREPARE FRAME DIRECTORY AND TASK LIST ---
+    if os.path.exists(FRAMES_DIR):
+        shutil.rmtree(FRAMES_DIR)
+    os.makedirs(FRAMES_DIR)
+
+    all_data_files = sorted(glob.glob(os.path.join(DATA_DIR, 'frame_*.npz')), key=get_frame_number)
+    if not all_data_files:
+        cprint(f"Error: No data files (.npz) found in '{DATA_DIR}'.", C.ERROR); exit()
+
+    data_files_to_render = [p for p in all_data_files if get_frame_number(p) % args.render_step == 0]
+
+    # The 'shared_info' dictionary will be passed to every worker.
+    # It contains all the run-specific info they need.
+    tasks = [(get_frame_number(path), path, FRAMES_DIR, metadata) for path in data_files_to_render]
+
+    cprint(f"Found {len(tasks)} frames to render.", C.WARNING)
+
+    # --- 5. EXECUTE RENDERING USING MULTIPROCESSING ---
+    if tasks:
+        # The arguments for the initializer are the heavy numpy arrays that each worker needs.
+        init_args = (substrate_points_np, substrate_neighbors_list, global_max_source)
+
+        num_processes = min(mp.cpu_count(), len(tasks))
+        with mp.Pool(processes=num_processes, initializer=init_worker, initargs=init_args) as pool:
+            results = list(tqdm(pool.imap_unordered(render_frame_worker, tasks), total=len(tasks), desc="Rendering Frames", bar_format="{l_bar}{bar:30}{r_bar}"))
+
+        failed_frames = [res for res in results if res is not None]
+        if failed_frames:
+            cprint(f"\nWarning: {len(failed_frames)} frame(s) failed to render.", C.WARNING)
+
+    cprint("Rendering complete.", C.SUCCESS)
+    cprint(f"\nFrames saved in '{FRAMES_DIR}'.", C.SUCCESS)
+    cprint(f"To compile the video, run:\n"
+           f"  python compile_video.py {RUN_DIR}", C.SUCCESS)
+
+if __name__ == "__main__":
+    main()
+# simulation.py v19.0
+# Part of Project Genesis: Breathing Causality
+# v19.0: "Local Catalysis & Spontaneous Symmetry Breaking"
+# - FUNDAMENTAL SHIFT 2.0: The global, entropy-based self-regulation is replaced
+#   by a LOCAL, self-catalyzing mechanism.
+# - The `interaction_strength` is now a FIELD, `strength_field[i]`, calculated for each node.
+# - The strength at a node is now proportional to a measure of LOCAL ORDER around it.
+#   This allows small, random fluctuations of order to amplify themselves,
+#   providing a mechanism for spontaneous symmetry breaking and particle formation.
+# - This model is far more physically realistic, resembling mechanisms of structure
+#   formation in condensed matter physics.
+
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve
+import multiprocessing as mp
+from termcolor import cprint
+
+# --- Import abstract classes ---
+from topologies import TopologyData
+from causality import AbstractCausalityComputer
+from field import AbstractField
+
+class Simulation:
+    """
+    The main simulation engine for Project Genesis.
+    v19.0 implements a local, self-catalyzing interaction mechanism.
+    """
+    def __init__(self,
+                 topology_data: TopologyData,
+                 field: AbstractField,
+                 causality_computer: AbstractCausalityComputer,
+                 base_interaction_strength: float = 200.0, # This can be higher now
+                 use_multiprocessing: bool = True):
+        
+        cprint(f"3. Assembling Simulation Engine (v19.0 - Local Catalysis)...", 'cyan', attrs=['bold'])
+
+        self.substrate = topology_data
+        self.field = field
+        self.causality_computer = causality_computer
+        self.num_points = self.substrate.num_points
+        self.base_interaction_strength = base_interaction_strength
+
+        if self.num_points != self.field.num_points:
+            raise ValueError("Field size must match topology size!")
+
+        self._laplacian_matrix_sparse = sp.csr_matrix(self._build_laplacian_matrix())
+        cprint(f"   -> Pre-calculated sparse graph Laplacian (Kinetic Term).", 'green')
+        
+        # Pre-build a list of neighbor indices for efficient local calculations
+        self._neighbor_indices_list = [np.array(n, dtype=int) for n in self.substrate.neighbors]
+        
+        # (Multiprocessing setup is unchanged)
+        self.pool = None
+        if use_multiprocessing and self.num_points > 1000:
+            try:
+                if mp.get_start_method(allow_none=True) is None:
+                    mp.set_start_method('spawn')
+                self.pool = mp.Pool(mp.cpu_count())
+                cprint(f"   -> Multiprocessing enabled on {mp.cpu_count()} cores.", 'green')
+            except (RuntimeError, ValueError) as e:
+                cprint(f"   -> Warning: Multiprocessing pool setup failed: {e}. Running single-threaded.", 'yellow')
+                self.pool = None
+        self.pool = None
+
+    def _build_laplacian_matrix(self):
+        # (This method is unchanged)
+        adj_matrix = np.zeros((self.num_points, self.num_points), dtype=np.float32)
+        degrees = np.zeros(self.num_points, dtype=np.float32)
+        for i, neighbors in enumerate(self.substrate.neighbors):
+            degrees[i] = len(neighbors)
+            for j in neighbors: adj_matrix[i, j] = 1
+        degree_matrix = np.diag(degrees)
+        return degree_matrix - adj_matrix
+
+    def _calculate_local_order_field(self, interaction_source: np.ndarray) -> np.ndarray:
+        """
+        Calculates a measure of local order for each node.
+        NEW in v19.0.
+        
+        Here, we define 'order' as the local concentration. For each node `i`, we calculate
+        the coefficient of variation of the source field among itself and its neighbors.
+        A high CV means a 'peaky', ordered region. A low CV means a 'flat', chaotic region.
+        """
+        local_order = np.zeros(self.num_points, dtype=np.float32)
+        
+        # This is a good candidate for parallelization if it's slow
+        for i in range(self.num_points):
+            neighbor_indices = self._neighbor_indices_list[i]
+            # Include the node itself in its local neighborhood
+            local_indices = np.append(neighbor_indices, i)
+            
+            local_source_values = interaction_source[local_indices]
+            
+            mean_val = np.mean(local_source_values)
+            if mean_val > 1e-12:
+                std_dev = np.std(local_source_values)
+                local_order[i] = std_dev / mean_val
+            # If mean is zero, order is zero.
+        
+        return local_order
+
+    def _evolve_field_locally_unitary(self, dt: float = 0.01):
+        """
+        Evolves the field using a Crank-Nicolson method with a LOCAL and DYNAMIC Hamiltonian.
+        """
+        interaction_source = self.field.get_interaction_source()
+        
+        # Step 1: Calculate the local order field.
+        local_order_field = self._calculate_local_order_field(interaction_source)
+        
+        # Step 2: Calculate the dynamic, local interaction strength field.
+        # This is our catalysis function. We use a simple power law (e.g., squared)
+        # to make the feedback strong. Ordered regions get much stronger interaction.
+        dynamic_strength_field = self.base_interaction_strength * (local_order_field ** 2)
+        
+        # Step 3: Construct the Hamiltonian using this dynamic strength field.
+        H_kinetic = self._laplacian_matrix_sparse
+        H_potential = sp.diags(-dynamic_strength_field * interaction_source)
+        H = H_kinetic + H_potential
+        
+        # Step 4: Solve the system using Crank-Nicolson (as in v17.1).
+        I = sp.identity(self.num_points, dtype=np.complex128)
+        A = I + 0.5j * H * dt
+        B = I - 0.5j * H * dt
+        
+        for c in range(self.field.num_components):
+            psi_current = self.field.values[:, c]
+            b = B @ psi_current
+            psi_next = spsolve(A, b, use_umfpack=True) # UMFPACK is often faster for such systems
+            self.field.values[:, c] = psi_next
+
+    def update_step(self) -> list:
+        """Executes one full step of the simulation."""
+        self._evolve_field_locally_unitary()
+        interaction_source = self.field.get_interaction_source()
+        causal_graph = self.causality_computer.compute(
+            interaction_source,
+            self.substrate.neighbors,
+            self.num_points
+        )
+        return causal_graph
+
+    def close(self):
+        """Cleanly shuts down the simulation resources."""
+        if self.pool:
+            self.pool.close()
+            self.pool.join()
+        cprint("\nSimulation engine shut down.", 'yellow')
+
+
+# --- Testing Block ---
+if __name__ == "__main__":
+    from topologies import generate_crystal_topology
+    from causality import ConvergentCausality
+    from initial_conditions import PrimordialSoupState
+    import matplotlib.pyplot as plt
+
+    cprint("\n--- Testing simulation.py v18.0 (Self-Regulation) ---", 'yellow', attrs=['bold'])
+
+    # We can now use a single, reasonable base_strength and expect interesting results
+    BASE_STRENGTH = 100.0
+
+    topo = generate_crystal_topology(width=20, height=20)
+    field = PrimordialSoupState().generate(topo)
+    causality = ConvergentCausality()
+
+    sim = Simulation(
+        topo, 
+        field, 
+        causality, 
+        base_interaction_strength=BASE_STRENGTH, 
+        use_multiprocessing=False
+    )
+
+    initial_prob = np.sum(np.abs(sim.field.values)**2)
+    print(f"Initial total probability: {initial_prob:.12f}")
+    assert np.isclose(initial_prob, 1.0)
+
+    # We can also track how the dynamic strength changes
+    strength_history = []
+    
+    print(f"\nRunning 100 steps with dynamic interaction strength (base={BASE_STRENGTH})...")
+    for i in range(100):
+        # We can extract the dynamic strength for logging if we modify the function slightly
+        # For now, just run the simulation
+        sim.update_step()
+    
+    final_prob = np.sum(np.abs(sim.field.values)**2)
+    print(f"Final total probability after 100 steps: {final_prob:.12f}")
+
+    assert np.allclose(final_prob, 1.0, atol=1e-9), "Probability conservation failed!"
+    cprint("  > SUCCESS: Probability is conserved with the new dynamic Hamiltonian.", 'green')
+    
+    sim.close()
+
+    cprint("\n--- Test Passed! The self-regulating engine is stable. ---", 'yellow', attrs=['bold'])# styling.py v1.0
+# Part of Project Genesis: Breathing Causality
+# New in v16.0: "Centralized Styling"
+# - Consolidates all color definitions and matplotlib styles into one place.
+# - Allows for easy theme changes across the entire project.
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+from termcolor import cprint
+
+# --- Console Colors (using termcolor names) ---
+# Usage: cprint("Hello", C.INFO)
+class C:
+    HEADER = 'magenta'
+    SUBHEADER = 'cyan'
+    SUCCESS = 'green'
+    WARNING = 'yellow'
+    ERROR = 'red'
+    INFO = 'white'
+    DEBUG = 'grey'
+    BOLD_ATTR = ['bold']
+
+# --- Matplotlib Plotting Styles ---
+
+# Global style for all plots
+plt.style.use('dark_background')
+
+# Common font sizes
+FONT_SIZE_TITLE = 18
+FONT_SIZE_LABEL = 12
+
+# 1. Colors for Analytics Plots
+COLOR_ENTROPY = '#00FFFF'      # Cyan
+COLOR_CONCENTRATION = '#FFD700' # Gold
+
+# 2. Colors and Colormaps for Frame Rendering
+COLOR_BACKGROUND = '#08040E' # Very dark purple/black
+COLOR_SUBSTRATE_EDGES = '#20182D' # Dim purple
+COLOR_PARTICLE_HULL_FACE = '#FFD700' # Gold
+COLOR_PARTICLE_HULL_EDGE = '#FFFFFF' # White
+
+# 2a. Heatmap Colormap (Energy |psi|^2)
+# Defines the gradient from deep space to a star-like core
+_heatmap_colors = ["#08040E", "#0c0a2b", "#4a0b5e", "#9b1d5f", "#e2534b", "#fcae1e", "#f0f0c0"]
+_heatmap_nodes  = [0.0, 0.05, 0.2, 0.4, 0.6, 0.8, 1.0]
+HEATMAP_CMAP = LinearSegmentedColormap.from_list("genesis_heatmap", list(zip(_heatmap_nodes, _heatmap_colors)))
+
+# 2b. Phase Colormap (for node colors)
+# HSV is a good choice as it's cyclical, matching the 2*pi nature of phase.
+PHASE_CMAP = plt.get_cmap('hsv')
+
+# 2c. Causal Graph Link Colors
+COLOR_CAUSAL_DARK = '#202020'  # Dark grey for the "past" part of the link
+COLOR_CAUSAL_LIGHT = '#404040' # Lighter grey for the "future" part
+
+# This allows for easy import and usage, e.g., `from styling import C, COLOR_ENTROPY`
+if __name__ == "__main__":
+    cprint("--- styling.py loaded ---", C.SUCCESS)
+    cprint("This file contains centralized color and style constants.", C.INFO)
+    cprint("Example usage:", C.SUBHEADER, attrs=C.BOLD_ATTR)
+    cprint("  from styling import C, HEATMAP_CMAP", C.DEBUG)
+    cprint("  cprint('Hello!', C.HEADER, attrs=C.BOLD_ATTR)", C.DEBUG)
+# test_analytics.py v13.0
+# Unit tests for the GlobalAnalytics module.
+
+import unittest
+import numpy as np
+import os
+import shutil
+from termcolor import cprint
+
+# Import the component to be tested
+from analytics import GlobalAnalytics
+
+class TestGlobalAnalytics(unittest.TestCase):
+    """A suite of tests for the global analytics engine."""
+
+    def setUp(self):
+        """Set up a fresh analytics object before each test."""
+        cprint(f"\n--- Running test: {self._testMethodName} ---", 'yellow')
+        self.num_points = 4
+        self.analytics = GlobalAnalytics(self.num_points)
+        self.test_dir = "test_run_dir_analytics"
+        # Clean up any old test directories
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def tearDown(self):
+        """Clean up the test directory after each test."""
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def test_accumulation_and_reporting(self):
+        """
+        Tests the core logic of accumulating data and generating a report.
+        """
+        cprint("  -> Testing data accumulation and report generation...", 'cyan')
+
+        # --- Frame 1 ---
+        psi1 = np.array([0.1, 0.2, 0.9, 0.3], dtype=complex)
+        psi1 /= np.linalg.norm(psi1) # Normalize
+        # Causal graph (incoming): 0->1, 0->2, 0->3, 1->2, 1->3, 3->2
+        # For simplicity, let's manually define a known causal graph
+        causal_graph1 = [
+            [],       # Nothing flows into 0
+            [0],      # 0 -> 1
+            [0, 1, 3],# 0->2, 1->2, 3->2
+            [0, 1]    # 0->3, 1->3
+        ]
+        self.analytics.analyze_step(psi1, causal_graph1, 1)
+
+        # --- Frame 2 ---
+        psi2 = np.array([0.8, 0.1, 0.2, 0.4], dtype=complex)
+        psi2 /= np.linalg.norm(psi2)
+        # Causal graph (incoming): 1->0, 2->0, 2->1, 3->0, 3->2
+        causal_graph2 = [
+            [1, 2, 3], # 1->0, 2->0, 3->0
+            [2],       # 2->1
+            [3],       # 3->2
+            []
+        ]
+        self.analytics.analyze_step(psi2, causal_graph2, 2)
+
+        # --- Verification Step 1: Check internal state ---
+
+        # 1a. Check entropy history
+        self.assertEqual(len(self.analytics.entropy_history), 2, "Should have recorded entropy for 2 frames.")
+        self.assertGreater(self.analytics.entropy_history[0], 0, "Entropy should be positive.")
+        self.assertGreater(self.analytics.entropy_history[1], 0, "Entropy should be positive.")
+
+        # 1b. Check causality flow matrix
+        # Let's build the expected matrix manually
+        # Frame 1 added: M[0,1]=1, M[0,2]=1, M[0,3]=1, M[1,2]=1, M[1,3]=1, M[3,2]=1
+        # Frame 2 added: M[1,0]=1, M[2,0]=1, M[3,0]=1, M[2,1]=1, M[3,2]=1 (again)
+        expected_matrix = np.array([
+            [0., 1., 1., 1.], # Outgoing from 0
+            [1., 0., 1., 1.], # Outgoing from 1
+            [1., 1., 0., 0.], # Outgoing from 2
+            [1., 0., 2., 0.]  # Outgoing from 3
+        ], dtype=np.float32)
+
+        # NOTE: My matrix is [sender, receiver]. So M[j,i] means j->i.
+        # This is correct.
+
+        self.assertTrue(
+            np.array_equal(self.analytics.causality_flow_matrix, expected_matrix),
+            "Accumulated causality matrix is incorrect."
+        )
+        cprint("  -> Internal state accumulated correctly.", 'green')
+
+        # --- Verification Step 2: Check report generation ---
+        self.analytics.generate_report(self.test_dir)
+
+        # 2a. Check that files were created
+        report_dir = os.path.join(self.test_dir, 'analytics')
+        self.assertTrue(os.path.exists(report_dir), "Analytics directory was not created.")
+
+        flow_path = os.path.join(report_dir, 'causality_flow.npz')
+        entropy_plot_path = os.path.join(report_dir, 'entropy_evolution.png')
+        entropy_data_path = os.path.join(report_dir, 'entropy_history.npz')
+
+        self.assertTrue(os.path.exists(flow_path))
+        self.assertTrue(os.path.exists(entropy_plot_path))
+        self.assertTrue(os.path.exists(entropy_data_path))
+
+        # 2b. Check content of saved data (with fixes)
+        flow_path = os.path.join(self.test_dir, 'analytics', 'causality_flow.npz')
+        entropy_data_path = os.path.join(self.test_dir, 'analytics', 'entropy_history.npz')
+
+        with np.load(flow_path) as flow_data:
+            self.assertTrue(np.array_equal(flow_data['flow_matrix'], expected_matrix))
+            # --- FIX: Use the correct, machine-calculated value ---
+            self.assertAlmostEqual(flow_data['asymmetry_score'], 3.0 / 11.0)
+
+        with np.load(entropy_data_path) as entropy_data:
+            self.assertEqual(len(entropy_data['entropy']), 2)
+            self.assertTrue(np.allclose(entropy_data['entropy'], self.analytics.entropy_history))
+
+        cprint("  -> Report and data files generated correctly.", 'green')
+        cprint("Test Passed: GlobalAnalytics is robust and correct.", 'green')
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+# test_initial_conditions.py v13.0
+# Unit tests for the data-centric initial condition generators.
+
+import unittest
+import numpy as np
+from termcolor import cprint
+
+# Import the components to be tested
+from topologies import TopologyData, generate_crystal_topology
+from initial_conditions import BaseInitialState, PrimordialSoupState, WavePacketState, VortexState
+
+class TestInitialConditions(unittest.TestCase):
+    """A suite of tests for the initial state generator classes."""
+
+    def setUp(self):
+        """Set up a mock topology_data object to be used by all tests."""
+        cprint(f"\n--- Running test: {self._testMethodName} ---", 'yellow')
+        # We use a real generator to create a realistic test environment
+        self.topology_data = generate_crystal_topology(width=20, height=20)
+        self.num_points = self.topology_data.num_points
+
+    def _run_common_tests(self, generator: BaseInitialState, generator_name: str):
+        """A helper function to run the same set of checks for any generator."""
+        cprint(f"  -> Testing generator: {generator_name}...", 'cyan')
+
+        # 1. Generate the psi field
+        psi = generator.generate(self.topology_data)
+
+        # 2. Check the type and shape
+        self.assertIsInstance(psi, np.ndarray, f"{generator_name} should return a numpy array.")
+        self.assertEqual(psi.shape, (self.num_points,), f"{generator_name} returned an array of incorrect shape.")
+        self.assertTrue(np.iscomplexobj(psi), f"{generator_name} should return a complex-valued array.")
+
+        # 3. CRITICAL: Check for normalization
+        total_probability = np.sum(np.abs(psi)**2)
+        self.assertTrue(
+            np.isclose(total_probability, 1.0),
+            f"{generator_name} did not return a normalized vector! |psi|^2 = {total_probability}"
+        )
+
+        cprint(f"  -> Test Passed for {generator_name}.", 'green')
+
+    def test_01_primordial_soup(self):
+        """Tests the PrimordialSoupState generator."""
+        generator = PrimordialSoupState()
+        self._run_common_tests(generator, "PrimordialSoupState")
+
+        # Specific test for soup: check that it's not a zero or constant vector
+        psi = generator.generate(self.topology_data)
+        self.assertFalse(np.all(psi == 0), "Soup state should not be a zero vector.")
+        self.assertFalse(len(np.unique(psi)) < 5, "Soup state should be highly random.")
+
+    def test_02_wave_packet(self):
+        """Tests the WavePacketState generator."""
+        generator = WavePacketState()
+        self._run_common_tests(generator, "WavePacketState")
+
+        # Specific test for wave packet: check that the amplitude is peaked at the center
+        psi = generator.generate(self.topology_data)
+        amplitudes_sq = np.abs(psi)**2
+        center_idx = self.num_points // 2 + 10 # Approximate center of the grid
+
+        # The amplitude at the center should be significantly higher than at the edges
+        self.assertGreater(
+            amplitudes_sq[center_idx],
+            amplitudes_sq[0] * 10,
+            "Wave packet amplitude should be peaked at the center."
+        )
+
+    def test_03_vortex(self):
+        """Tests the VortexState generator."""
+        generator = VortexState()
+        self._run_common_tests(generator, "VortexState")
+
+        # Specific test for vortex: check for the topological charge
+        psi = generator.generate(self.topology_data)
+
+        # Find the center (should be the point with the minimum amplitude)
+        center_idx = np.argmin(np.abs(psi))
+        center_neighbors = self.topology_data.neighbors[center_idx]
+
+        # Calculate the total phase change when traversing the neighbors
+        neighbor_phases = np.angle(psi[center_neighbors])
+
+        # To calculate charge, we need to get angles relative to the center node
+        center_point = self.topology_data.points[center_idx]
+        neighbor_points = self.topology_data.points[center_neighbors]
+        geometric_angles = np.arctan2(neighbor_points[:,1] - center_point[1], neighbor_points[:,0] - center_point[0])
+
+        # Sort neighbors by their geometric angle
+        sorted_indices = np.argsort(geometric_angles)
+        sorted_neighbor_phases = neighbor_phases[sorted_indices]
+
+        # Calculate phase differences between sorted neighbors
+        phase_diffs = np.diff(sorted_neighbor_phases)
+        # Handle the wrap-around from 2pi to -2pi
+        phase_diffs = np.angle(np.exp(1j * phase_diffs))
+
+        total_phase_change = np.sum(phase_diffs)
+        # Add the final jump from the last neighbor back to the first
+        final_jump = sorted_neighbor_phases[0] - sorted_neighbor_phases[-1]
+        total_phase_change += np.angle(np.exp(1j * final_jump))
+
+        topological_charge = total_phase_change / (2 * np.pi)
+
+        cprint(f"  -> Calculated topological charge: {topological_charge:.4f}", 'cyan')
+        self.assertTrue(
+            np.isclose(topological_charge, 1.0),
+            f"Vortex state should have a topological charge of ~1.0, but got {topological_charge}"
+        )
+
+# --- This allows running the tests directly from the command line ---
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+# test_renderer.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Strategy-Aware Test"
+# - The test script is updated to work with the new data-driven,
+#   strategy-based rendering architecture.
+# - It correctly reads `field_type` and `global_interaction_source_max` from
+#   the metadata.json file.
+# - It properly calls the worker initializer (`init_worker`) with the
+#   correct arguments.
+# - The arguments tuple passed to `render_frame_worker` is updated to match
+#   the new, simplified signature.
+
+import numpy as np
+import argparse
+import os
+import json
+import shutil
+
+# --- Import centralized styling for console output ---
+from styling import C, cprint
+
+# --- Import the components to be tested ---
+from renderer_worker import render_frame_worker, init_worker, worker_substrate_data
+
+def main():
+    """Main function to test the rendering of a single frame."""
+    # --- 1. SETUP ARGUMENT PARSER ---
+    parser = argparse.ArgumentParser(
+        description="Render a single frame from a Project Genesis v16+ run for testing.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument('run_directory', type=str, help="Path to the run directory.")
+    parser.add_argument('frame_number', type=int, help="The specific frame number to render.")
+    parser.add_argument('-o', '--output', type=str, default=None, help="Optional output filename.")
+    args = parser.parse_args()
+
+    # --- 2. DEFINE PATHS AND VALIDATE ---
+    RUN_DIR = args.run_directory
+    FRAME_NUM = args.frame_number
+    DATA_DIR = os.path.join(RUN_DIR, 'data')
+    METADATA_PATH = os.path.join(RUN_DIR, 'metadata.json')
+    DATA_PATH = os.path.join(DATA_DIR, f"frame_{FRAME_NUM:05d}.npz")
+    SUBSTRATE_PATH = os.path.join(RUN_DIR, 'substrate.npz')
+
+    if not all(os.path.exists(p) for p in [METADATA_PATH, SUBSTRATE_PATH, DATA_PATH]):
+        cprint(f"Error: Run directory '{RUN_DIR}' is incomplete.", C.ERROR); exit()
+
+    cprint(f"--- Running Single Frame Renderer Test (v16.0) on Frame {FRAME_NUM} ---", C.SUBHEADER, attrs=C.BOLD_ATTR)
+
+    # --- 3. LOAD METADATA AND SUBSTRATE ( mimicking the main script ) ---
+    try:
+        with open(METADATA_PATH, 'r') as f:
+            metadata = json.load(f)
+
+        with np.load(SUBSTRATE_PATH, allow_pickle=True) as sub_data:
+            substrate_points = sub_data['points']
+            substrate_neighbors = [list(n) for n in sub_data['neighbors']]
+
+        global_max_source = metadata.get('global_interaction_source_max')
+        if global_max_source is None:
+            cprint("Warning: 'global_interaction_source_max' not in metadata. Using fallback.", C.WARNING)
+            global_max_source = 1.0
+
+    except Exception as e:
+        cprint(f"Error loading necessary files: {e}", C.ERROR); exit()
+
+    # --- 4. INITIALIZE THE 'WORKER' ENVIRONMENT IN THE MAIN THREAD ---
+    cprint("Initializing worker environment...", C.WARNING)
+    init_worker(substrate_points, substrate_neighbors, global_max_source)
+    assert 'points' in worker_substrate_data, "Worker initialization failed."
+    cprint("  > Worker initialized successfully.", C.SUCCESS)
+
+    # --- 5. PREPARE ARGUMENTS AND CALL THE WORKER FUNCTION ---
+
+    # Create a temporary directory for the output frame
+    temp_output_dir = "temp_render_test"
+    if os.path.exists(temp_output_dir):
+        shutil.rmtree(temp_output_dir)
+    os.makedirs(temp_output_dir)
+
+    # This is the tuple that the multiprocessing pool would normally create
+    args_tuple = (FRAME_NUM, DATA_PATH, temp_output_dir, metadata)
+
+    cprint(f"Calling render_frame_worker for frame {FRAME_NUM}...", C.WARNING)
+    result = render_frame_worker(args_tuple)
+
+    # --- 6. CHECK RESULTS AND CLEAN UP ---
+    temp_output_file = os.path.join(temp_output_dir, f"frame_{FRAME_NUM:05d}.png")
+
+    if result is None and os.path.exists(temp_output_file):
+        # Determine final output name
+        output_filename = args.output if args.output else f"test_render_frame_{FRAME_NUM}.png"
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+
+        # Move the successful render from the temp dir to the final location
+        shutil.move(temp_output_file, output_filename)
+        cprint(f"\nSUCCESS! Test frame saved as '{os.path.abspath(output_filename)}'.", C.SUCCESS)
+    else:
+        cprint(f"\nFAILURE! Renderer returned an error:", C.ERROR)
+        print(result)
+
+    # Clean up the temporary directory
+    shutil.rmtree(temp_output_dir)
+
+    cprint("\n--- Test Complete ---", C.SUBHEADER, attrs=C.BOLD_ATTR)
+
+if __name__ == "__main__":
+    main()
+# test_simulation.py v15.1
+# Integration tests for the Simulation core (Paradigm Shift version).
+# This test verifies the physical behavior of the simulation engine.
+
+import unittest
+import numpy as np
+from termcolor import cprint
+
+# --- Import all REAL components for the integration test ---
+from topologies import TopologyData, generate_crystal_topology
+from causality import AmplitudeConvergentCausality, AmplitudeDivergentCausality
+from initial_conditions import BaseInitialState
+from simulation import Simulation
+
+# --- Mock Initial Condition for precise testing ---
+class HotSpotState(BaseInitialState):
+    """A generator that places all amplitude on a single node."""
+    def __init__(self, spot_index=0):
+        self.spot_index = spot_index
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        psi = np.zeros(topology_data.num_points, dtype=complex)
+        psi[self.spot_index] = 1.0 + 0.0j
+        return psi
+
+class FlatState(BaseInitialState):
+    """A generator for a completely flat, uniform amplitude state."""
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        amp = 1.0 / np.sqrt(topology_data.num_points)
+        return np.full(topology_data.num_points, amp, dtype=complex)
+
+class IslandState(BaseInitialState):
+    def __init__(self, island_nodes: list):
+        self.island_nodes = island_nodes
+    def generate(self, topology_data: TopologyData) -> np.ndarray:
+        psi = np.zeros(topology_data.num_points, dtype=complex)
+        amp = 1.0 / np.sqrt(len(self.island_nodes))
+        psi[self.island_nodes] = amp
+        return psi
+
+class TestSimulationV15(unittest.TestCase):
+    """A suite of tests for the physically corrected Simulation class."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up a single, simple topology for all tests."""
+        cprint(f"\n--- Setting up Test Environment for Simulation v15.1 ---", 'yellow')
+        # A 3x3 grid is small enough to reason about, but not trivial.
+        cls.topology_data = generate_crystal_topology(width=3, height=3)
+        cls.causality_gen = AmplitudeConvergentCausality()
+
+    def test_01_probability_conservation(self):
+        """Test 1: Ensures |psi|^2 = 1 is maintained over many steps."""
+        cprint("  -> Testing probability conservation...", 'cyan')
+        initial_state_gen = HotSpotState(spot_index=4) # Center node
+        sim = Simulation(self.topology_data, self.causality_gen, initial_state_gen)
+
+        for _ in range(50):
+            sim.update_step()
+            self.assertTrue(
+                np.isclose(np.sum(np.abs(sim.psi)**2), 1.0),
+                f"Normalization failed! |psi|^2 = {np.sum(np.abs(sim.psi)**2)}"
+            )
+        sim.close()
+        cprint("Test Passed: Probability is conserved.", 'green')
+
+    def test_02_flat_state_stability(self):
+        """Test 2: A uniform state should not evolve in amplitude."""
+        cprint("  -> Testing stability of a flat (zero-Laplacian) state...", 'cyan')
+        initial_state_gen = FlatState()
+        sim = Simulation(self.topology_data, self.causality_gen, initial_state_gen)
+
+        initial_amps_sq = np.abs(sim.psi)**2
+        sim.update_step()
+        final_amps_sq = np.abs(sim.psi)**2
+
+        # Amplitudes should not change, only phases might.
+        self.assertTrue(
+            np.allclose(initial_amps_sq, final_amps_sq),
+            "Amplitudes of a flat state should not evolve."
+        )
+        sim.close()
+        cprint("Test Passed: Flat state is stable.", 'green')
+
+    def test_03_island_evolution_divergent(self):
+        """Test 3a: An 'island' must spread out under Divergent causality."""
+        cprint("  -> Testing island evolution (Divergent flow)...", 'cyan')
+
+        center_node = 4
+        island_nodes = [center_node] + self.topology_data.neighbors[center_node]
+
+        initial_state_gen = IslandState(island_nodes=island_nodes)
+        causality_gen = AmplitudeDivergentCausality()
+        sim = Simulation(self.topology_data, causality_gen, initial_state_gen)
+
+        energy_before = np.sum(np.abs(sim.psi[island_nodes])**2)
+        self.assertAlmostEqual(energy_before, 1.0)
+
+        sim.update_step()
+
+        energy_after = np.sum(np.abs(sim.psi[island_nodes])**2)
+
+        self.assertLess(
+            energy_after,
+            energy_before,
+            "Energy did not flow outwards from the island under Divergent rule."
+        )
+        sim.close()
+        cprint("Test Passed: Island correctly diffuses (Divergent).", 'green')
+
+
+    def test_04_causal_graph_correctness(self):
+        """Test 4: The returned causal graph must match the state of psi AFTER evolution."""
+        cprint("  -> Testing correctness of the returned causal graph...", 'cyan')
+        initial_state_gen = HotSpotState(spot_index=4)
+        sim = Simulation(self.topology_data, self.causality_gen, initial_state_gen)
+
+        # Run one step to get the state psi_after and the returned graph
+        returned_causal_graph = sim.update_step()
+        psi_after = sim.psi
+
+        # Now, manually calculate what the causal graph should be for psi_after
+        expected_causal_graph = self.causality_gen.evolve(
+            psi_after,
+            self.topology_data.neighbors,
+            self.topology_data.num_points
+        )
+
+        self.assertEqual(
+            returned_causal_graph,
+            expected_causal_graph,
+            "Returned causal graph does not match the final state of psi."
+        )
+        sim.close()
+        cprint("Test Passed: Causal graph is correctly generated from the new psi state.", 'green')
+
+    def test_05_island_evolution_convergent(self):
+        """Test 3b: An 'island' must contract or stabilize under Convergent causality."""
+        cprint("  -> Testing island evolution (Convergent flow)...", 'cyan')
+
+        center_node = 4
+        island_nodes = [center_node] + self.topology_data.neighbors[center_node]
+
+        initial_state_gen = IslandState(island_nodes=island_nodes)
+        causality_gen = AmplitudeConvergentCausality()
+        sim = Simulation(self.topology_data, causality_gen, initial_state_gen)
+
+        energy_before = np.sum(np.abs(sim.psi[island_nodes])**2)
+        sim.update_step()
+        energy_after = np.sum(np.abs(sim.psi[island_nodes])**2)
+
+        self.assertGreaterEqual(
+            energy_after,
+            energy_before * 0.99, # Даем небольшой допуск на численные эффекты
+            "Energy should not significantly dissipate from the island under Convergent rule."
+        )
+        sim.close()
+        cprint("Test Passed: Island correctly contracts/stabilizes (Convergent).", 'green')
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+# test_topologies.py v13.0
+# Unit tests for the data-centric topology architecture.
+# Verifies TopologyData, generator functions, and the TopologyFactory.
+
+import unittest
+import numpy as np
+from termcolor import cprint
+
+# Import the components we want to test
+from topologies import TopologyData, generate_crystal_topology, TopologyFactory
+
+class TestTopologyArchitecture(unittest.TestCase):
+    """A suite of tests for the topology generation ecosystem."""
+
+    def setUp(self):
+        """This method is called before each test function."""
+        cprint(f"\n--- Running test: {self._testMethodName} ---", 'yellow')
+
+    def test_01_topology_data_container(self):
+        """Tests the basic functionality and validation of the TopologyData container."""
+        cprint("  -> Testing TopologyData class...", 'cyan')
+
+        # Test successful creation
+        points = np.array([[0,0], [1,1]])
+        neighbors = [[1], [0]]
+        topo = TopologyData(points=points, neighbors=neighbors, dimensionality=2)
+        self.assertEqual(topo.num_points, 2)
+        self.assertEqual(topo.dimensionality, 2)
+
+        # Test validation: mismatched lengths
+        with self.assertRaises(AssertionError):
+            cprint("  -> Testing validation: mismatched points and neighbors...", 'cyan')
+            TopologyData(points=points, neighbors=[[1]], dimensionality=2) # Only one neighbor list
+
+        # Test validation: mismatched dimensionality
+        with self.assertRaises(AssertionError):
+            cprint("  -> Testing validation: mismatched points and dimensionality...", 'cyan')
+            TopologyData(points=points, neighbors=neighbors, dimensionality=3) # Points are 2D
+
+        cprint("Test Passed: TopologyData container is robust.", 'green')
+
+    def test_02_crystal_topology_generator(self):
+        """Tests the crystal topology generator for correctness."""
+        cprint("  -> Testing generate_crystal_topology function...", 'cyan')
+
+        # Use a small, predictable grid size
+        width, height = 4, 4
+        topo_data = generate_crystal_topology(width=width, height=height)
+
+        # --- Verification ---
+        # 1. Check basic properties
+        self.assertIsInstance(topo_data, TopologyData)
+        self.assertEqual(topo_data.num_points, width * height)
+        self.assertEqual(topo_data.dimensionality, 2)
+
+        # 2. Check a known property of the hexagonal lattice
+        # The total number of edges in a grid like this can be calculated.
+        # Edges = (width-1)*height + (height-1)*width + (height-1)*(width-1)
+        # For a 4x4 grid: 3*4 + 3*4 + 3*3 = 12 + 12 + 9 = 33
+        total_edges = sum(len(n) for n in topo_data.neighbors) // 2
+        self.assertEqual(total_edges, 33)
+
+        # 3. Check a central node for 6 neighbors
+        # Index for a central node in a 4x4 grid (e.g., node 5)
+        center_node_idx = 1 * width + 1
+        self.assertEqual(len(topo_data.neighbors[center_node_idx]), 6)
+
+        cprint("Test Passed: Crystal generator creates a valid lattice.", 'green')
+
+    def test_03_topology_factory(self):
+        """Tests the TopologyFactory's ability to create correct objects."""
+        cprint("  -> Testing TopologyFactory...", 'cyan')
+
+        # 1. Test creating a crystal
+        params_crystal = {'width': 5, 'height': 5}
+        topo_crystal = TopologyFactory.create('crystal', params_crystal)
+        self.assertIsInstance(topo_crystal, TopologyData)
+        self.assertEqual(topo_crystal.num_points, 25)
+        self.assertEqual(topo_crystal.dimensionality, 2)
+
+        # 2. Test default parameters
+        topo_default = TopologyFactory.create('crystal', {}) # Empty params
+        self.assertIsInstance(topo_default, TopologyData)
+        self.assertEqual(topo_default.num_points, 80 * 60) # Should use defaults
+
+        # 3. Test for raising an error on unknown type
+        with self.assertRaises(ValueError):
+            cprint("  -> Testing validation: unknown topology type...", 'cyan')
+            TopologyFactory.create('non_existent_topology', {})
+
+        cprint("Test Passed: TopologyFactory works as expected.", 'green')
+
+# --- This allows running the tests directly from the command line ---
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+# test_tracker.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Data-Driven Test Refactoring"
+# - The test suite is updated to match the new `ParticleTracker` architecture.
+# - The `MockSimulation` class is removed entirely, as it's no longer needed.
+# - Tests now directly create and manipulate the data (`field`, `substrate`) that
+#   is passed to the tracker, making the tests more direct and transparent.
+# - This verifies that the refactored, decoupled tracker works correctly.
+
+import unittest
+import numpy as np
+from termcolor import cprint
+
+# --- Import the REAL components we are testing against ---
+from topologies import TopologyData, generate_crystal_topology
+from field import ScalarField
+from tracker import ParticleTracker
+
+class TestParticleTrackerV16(unittest.TestCase):
+    """
+    A suite of tests for the refactored, data-driven ParticleTracker.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up a REAL topology once for all tests."""
+        cprint(f"\n--- Setting up Test Environment for ParticleTracker v16.0 ---", 'yellow')
+        # We use the real generator to ensure the neighbor list is 100% correct.
+        cls.topology_data = generate_crystal_topology(width=20, height=20)
+
+    def setUp(self):
+        """Create a fresh tracker and a field object before each test."""
+        self.tracker = ParticleTracker(
+            stability_threshold=3,
+            min_clump_size=4,
+            ema_alpha=0.5,
+            amp_threshold_factor=2.0
+        )
+        # Create a field object that will be manipulated in each test
+        self.field = ScalarField(self.topology_data.num_points)
+
+    def set_field_from_pattern(self, pattern: dict, background_amp: float = 0.01):
+        """
+        Helper function to set the field state based on a topological pattern.
+        This is a purely topological way to define the test stimulus.
+        """
+        amplitudes = np.full(self.topology_data.num_points, background_amp)
+        for node_idx, amp in pattern.items():
+            amplitudes[node_idx] = amp
+
+        # Use random phases for realism
+        phases = np.random.uniform(0, 2 * np.pi, self.topology_data.num_points)
+
+        self.field.values = (amplitudes * np.exp(1j * phases)).reshape(-1, 1)
+
+    def test_full_lifecycle(self):
+        """Tests the full particle lifecycle using the new data-driven API."""
+        cprint("  -> Testing full particle lifecycle with decoupled data...", 'cyan')
+
+        # Helper function to define the particle pattern topologically
+        def get_pattern(center_idx):
+            neighbors = self.topology_data.neighbors[center_idx]
+            pattern_nodes = {center_idx}
+            if len(neighbors) >= 4:
+                pattern_nodes.update(neighbors[:4])
+            else:
+                pattern_nodes.update(neighbors)
+            return {node: 10.0 for node in pattern_nodes}
+
+        # --- Frames 0-1: Empty space ---
+        self.set_field_from_pattern({})
+        # Call analyze_frame with the new signature
+        self.tracker.analyze_frame(
+            self.field.get_interaction_source(),
+            self.field.values,
+            self.topology_data,
+            frame_num=0
+        )
+        self.assertEqual(len(self.tracker.tracked_particles), 0)
+
+        # --- Frame 2: Particle is born ---
+        cprint("    Frame 2: A particle (topological pattern) is born...")
+        center_node_start = 50
+        self.set_field_from_pattern(get_pattern(center_node_start))
+        self.tracker.analyze_frame(
+            self.field.get_interaction_source(),
+            self.field.values,
+            self.topology_data,
+            frame_num=2
+        )
+        self.assertEqual(len(self.tracker.tracked_particles), 1, "Particle should be born.")
+        particle_id = list(self.tracker.tracked_particles.keys())[0]
+
+        # --- Frames 3-5: Particle moves smoothly (topologically) ---
+        center_node_current = center_node_start
+        for i in range(1, 4):
+            frame = 2 + i
+            # Move to the first neighbor for simplicity
+            center_node_current = self.topology_data.neighbors[center_node_current][0]
+            cprint(f"    Frame {frame}: Moving pattern to center node {center_node_current}...")
+
+            self.set_field_from_pattern(get_pattern(center_node_current))
+            stable_particles = self.tracker.analyze_frame(
+                self.field.get_interaction_source(),
+                self.field.values,
+                self.topology_data,
+                frame_num=frame
+            )
+
+            self.assertIn(particle_id, self.tracker.tracked_particles, f"Tracker lost particle on frame {frame}!")
+
+            if frame == 5:
+                p_data = self.tracker.tracked_particles[particle_id]
+                self.assertEqual(p_data['age'], 4, "Particle age is incorrect.")
+                self.assertEqual(p_data['state'], 'stable', "Particle should be stable.")
+                self.assertEqual(len(stable_particles), 1, "Stable particle list should contain one particle.")
+
+        # --- Frame 6: Disappears ---
+        cprint("    Frame 6: Particle pattern is removed...")
+        self.set_field_from_pattern({})
+        self.tracker.analyze_frame(
+            self.field.get_interaction_source(),
+            self.field.values,
+            self.topology_data,
+            frame_num=6
+        )
+
+        self.assertEqual(len(self.tracker.tracked_particles), 0, "Particle should be dead and removed.")
+
+        cprint("Test Passed: Lifecycle handled correctly with the new API.", 'green')
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+# topologies.py v13.1
+# Part of Project Genesis: Breathing Causality
+# v13.1: Final, robust data-centric architecture.
+# - Contains the passive TopologyData container.
+# - Contains generator functions for creating topologies.
+# - Contains a factory to select the correct generator.
+
+import numpy as np
+from termcolor import cprint
+
+class TopologyData:
+    """A simple, passive data container for the static substrate."""
+    def __init__(self, points: np.ndarray, neighbors: list, dimensionality: int, **kwargs):
+        self.points = points
+        self.neighbors = neighbors
+        self.dimensionality = dimensionality
+        self.num_points = len(points)
+
+        # Store any additional metadata (like width, height for crystals)
+        self.metadata = kwargs
+        self.__dict__.update(kwargs) # Allow direct attribute access, e.g., topology_data.width
+
+        # Validation
+        assert len(points) == len(neighbors), "Points and neighbors lists must have the same length."
+        if points.ndim == 2: # Ensure this check doesn't fail for empty arrays
+            assert points.shape[1] == dimensionality, "Points' dimension must match the specified dimensionality."
+
+# --- GENERATOR FUNCTIONS ---
+
+def generate_crystal_topology(width: int = 80, height: int = 60) -> TopologyData:
+    """Generator function for a 2D crystal topology."""
+    cprint(f"1. Generating Substrate: 2D Crystal ({width}x{height})", 'cyan', attrs=['bold'])
+    num_points = width * height
+    points = np.zeros((num_points, 2), dtype=float)
+    neighbors = [[] for _ in range(num_points)]
+
+    for r in range(height):
+        for q in range(width):
+            idx = r * width + q
+            px = q + 0.5 * (r % 2); py = r * np.sqrt(3) / 2
+            points[idx] = [px, py]
+
+            if q > 0:
+                left_idx = idx - 1
+                neighbors[idx].append(left_idx)
+                neighbors[left_idx].append(idx)
+            if r > 0:
+                if r % 2 == 0:
+                    if q > 0:
+                        top_left_idx = idx - width - 1
+                        neighbors[idx].append(top_left_idx)
+                        neighbors[top_left_idx].append(idx)
+                    top_right_idx = idx - width
+                    neighbors[idx].append(top_right_idx)
+                    neighbors[top_right_idx].append(idx)
+                else:
+                    top_left_idx = idx - width
+                    neighbors[idx].append(top_left_idx)
+                    neighbors[top_left_idx].append(idx)
+                    if q < width - 1:
+                        top_right_idx = idx - width + 1
+                        neighbors[idx].append(top_right_idx)
+                        neighbors[top_right_idx].append(idx)
+
+    points -= np.mean(points, axis=0)
+
+    return TopologyData(points=points, neighbors=neighbors, dimensionality=2, width=width, height=height)
+
+# --- FACTORY ---
+
+class TopologyFactory:
+    @staticmethod
+    def create(topology_type: str, params: dict) -> TopologyData:
+        if topology_type == 'crystal':
+            return generate_crystal_topology(
+                width=params.get('width', 80),
+                height=params.get('height', 60)
+            )
+        # Add other generators here in the future
+        # elif topology_type == 'random_3d':
+        #     ...
+        else:
+            raise ValueError(f"Unknown topology type: '{topology_type}'")
+# tracker.py v16.0
+# Part of Project Genesis: Breathing Causality
+# v16.0: "Data-Driven Refactoring"
+# - CRITICAL FIX: The `analyze_frame` method signature is updated to accept
+#   decoupled data (`interaction_source`, `field_values`, `substrate`) instead
+#   of a monolithic `sim` object. This fixes the TypeError from main.py.
+# - The tracker is now fully independent of the Simulation class, improving
+#   modularity and making it easier to test.
+# - Internal logic is updated to use these new, direct data inputs.
+
+import numpy as np
+from collections import deque
+from scipy.optimize import linear_sum_assignment
+from termcolor import cprint
+
+# Import TopologyData for type hinting
+from topologies import TopologyData
+
+class ParticleTracker:
+    """
+    Analyzes the simulation to find and track stable, time-averaged quasi-particles.
+    This version is a pure topological analyzer that operates on decoupled data.
+    """
+    def __init__(self,
+                 ema_alpha=0.1,
+                 amp_threshold_factor=2.5,
+                 min_clump_size=5,
+                 matching_cost_threshold=8.0,
+                 mass_weight=1.0,
+                 charge_weight=5.0,
+                 distance_weight=0.5,
+                 stability_threshold=50,
+                 log_death_threshold=20):
+
+        # --- Parameters remain the same ---
+        self.ema_alpha = ema_alpha
+        self.amp_threshold_factor = amp_threshold_factor
+        self.min_clump_size = min_clump_size
+        self.matching_cost_threshold = matching_cost_threshold
+        self.mass_weight = mass_weight
+        self.charge_weight = charge_weight
+        self.distance_weight = distance_weight
+        self.stability_threshold = stability_threshold
+        self.log_death_threshold = log_death_threshold
+
+        # --- Internal state remains the same ---
+        self.tracked_particles = {}
+        self.next_track_id = 0
+        self.time_averaged_source = None # Renamed for clarity
+
+    def _update_smoothed_field(self, current_source: np.ndarray):
+        """Updates the exponentially smoothed interaction source field."""
+        if self.time_averaged_source is None:
+            self.time_averaged_source = current_source.copy()
+        else:
+            self.time_averaged_source = (self.ema_alpha * current_source +
+                                         (1 - self.ema_alpha) * self.time_averaged_source)
+
+    def _find_clumps_via_bfs(self, binary_map: np.ndarray, substrate_neighbors: list) -> list:
+        """Finds connected components (clumps) on a graph using Breadth-First Search."""
+        # This function is purely topological and requires no changes.
+        num_points = len(binary_map)
+        visited = np.zeros(num_points, dtype=bool)
+        all_clumps = []
+        for i in range(num_points):
+            if binary_map[i] and not visited[i]:
+                current_clump_indices = []
+                q = deque([i])
+                visited[i] = True
+                while q:
+                    current_node = q.popleft()
+                    current_clump_indices.append(current_node)
+                    for neighbor in substrate_neighbors[current_node]:
+                        if binary_map[neighbor] and not visited[neighbor]:
+                            visited[neighbor] = True
+                            q.append(neighbor)
+                all_clumps.append(current_clump_indices)
+        return all_clumps
+
+    def _detect_and_characterize_clumps(self,
+                                        interaction_source: np.ndarray,
+                                        field_values: np.ndarray,
+                                        substrate: TopologyData) -> list:
+        """Finds and measures clumps based on the current and smoothed source fields."""
+        if self.time_averaged_source is None: return []
+
+        # --- Segmentation on the smoothed source field ---
+        global_mean_smoothed_source = np.mean(self.time_averaged_source)
+        if global_mean_smoothed_source < 1e-9: return []
+        threshold = self.amp_threshold_factor * global_mean_smoothed_source
+        binary_map_smooth = self.time_averaged_source > threshold
+
+        # --- "Reality Check" on the instantaneous source ---
+        reality_check_threshold = 0.5 * threshold
+        binary_map_instant = interaction_source > reality_check_threshold
+
+        # A node is "hot" only if it's hot in BOTH maps.
+        final_binary_map = binary_map_smooth & binary_map_instant
+
+        clump_node_lists = self._find_clumps_via_bfs(final_binary_map, substrate.neighbors)
+        if not clump_node_lists: return []
+
+        # Characterization
+        candidates = []
+        for node_indices in clump_node_lists:
+            if len(node_indices) < self.min_clump_size: continue
+
+            # We use the full field_values here to calculate properties like charge
+            clump_psi = field_values[node_indices]
+            clump_source_instant = interaction_source[node_indices]
+            clump_points = substrate.points[node_indices]
+
+            mass = np.sum(clump_source_instant)
+            if mass < 1e-9: continue
+
+            position = np.average(clump_points, weights=clump_source_instant, axis=0)
+
+            # Charge calculation needs the complex psi values
+            # This logic will need updating for multi-component fields (spinors)
+            center_phase = np.angle(np.sum(clump_psi.ravel() * clump_source_instant))
+            charge = np.sum(np.angle(np.exp(1j * (np.angle(clump_psi.ravel()) - center_phase)))) / len(node_indices)
+
+            candidates.append({
+                "mass": mass, "charge": charge, "position": position,
+                "size": len(node_indices), "node_indices": node_indices
+            })
+        return candidates
+
+    def analyze_frame(self,
+                      interaction_source: np.ndarray,
+                      field_values: np.ndarray,
+                      substrate: TopologyData,
+                      frame_num: int) -> list:
+        """
+        Main analysis method for a single frame. Operates on decoupled data.
+        """
+        self._update_smoothed_field(interaction_source)
+        current_candidates = self._detect_and_characterize_clumps(interaction_source, field_values, substrate)
+
+        # --- Matching, updating, and killing tracks (logic unchanged) ---
+        for p_data in self.tracked_particles.values(): p_data['seen_this_frame'] = False
+        previous_tracks = list(self.tracked_particles.values())
+        if previous_tracks and current_candidates:
+            cost_matrix = np.zeros((len(previous_tracks), len(current_candidates)))
+            for i, p_old in enumerate(previous_tracks):
+                for j, p_new in enumerate(current_candidates):
+                    mass_diff = abs(p_old['mass'] - p_new['mass'])
+                    charge_diff = abs(p_old['average_charge'] - p_new['charge'])
+                    dist_diff = np.linalg.norm(p_old['position'] - p_new['position'])
+                    cost = (self.mass_weight * mass_diff +
+                            self.charge_weight * charge_diff +
+                            self.distance_weight * dist_diff)
+                    cost_matrix[i, j] = cost
+            old_indices, new_indices = linear_sum_assignment(cost_matrix)
+            for i, j in zip(old_indices, new_indices):
+                if cost_matrix[i, j] < self.matching_cost_threshold:
+                    track_id = previous_tracks[i]['track_id']
+                    self._update_track(track_id, current_candidates[j], frame_num)
+                    self.tracked_particles[track_id]['seen_this_frame'] = True
+                    current_candidates[j]['matched'] = True
+
+        dead_ids = [tid for tid, p in self.tracked_particles.items() if not p.get('seen_this_frame')]
+        for tid in dead_ids:
+            if self.tracked_particles[tid]['age'] > self.log_death_threshold:
+                 pass # cprint can cause issues in multiprocessing, logging is better
+            del self.tracked_particles[tid]
+
+        for cand in current_candidates:
+            if not cand.get('matched', False):
+                self._create_new_track(cand, frame_num)
+
+        stable_attractors = []
+        for track_id, p_data in self.tracked_particles.items():
+            if p_data['age'] > self.stability_threshold:
+                if p_data.get('state') != 'stable':
+                    p_data['state'] = 'stable'
+                    # cprint is problematic here too, stability should be logged centrally.
+                stable_attractors.append(p_data)
+
+        return stable_attractors
+
+    def _create_new_track(self, candidate, frame_num):
+        new_id = self.next_track_id; self.next_track_id += 1
+        self.tracked_particles[new_id] = {
+            **candidate, "track_id": new_id, "age": 1, "last_seen_frame": frame_num,
+            "state": "tracking", "charge_history": [candidate["charge"]],
+            "average_charge": candidate["charge"]
+        }
+
+    def _update_track(self, track_id, candidate, frame_num):
+        p = self.tracked_particles[track_id]
+        p.update(candidate); p["age"] += 1; p["last_seen_frame"] = frame_num
+        p["charge_history"].append(candidate["charge"])
+        if len(p["charge_history"]) > 10: p["charge_history"].pop(0)
+        p["average_charge"] = np.mean(p["charge_history"])
+# utils.py v1.0
+# A central module for common, robust utility functions.
+
+import numpy as np
+
+def is_valid_array(arr):
+    """
+    The one and only function to safely check if an object is a non-empty
+    numpy array or a non-empty list.
+
+    This function is designed to be used in `if` statements to avoid the
+    `ValueError: The truth value of an array... is ambiguous` error.
+
+    Returns:
+        bool: True if the object is a list/array with at least one element.
+    """
+
+    # Check 1: Is it a numpy array?
+    if isinstance(arr, np.ndarray):
+        # For numpy arrays, the correct way to check for non-emptiness is .size
+        return arr.size > 0
+
+    # Check 2: Is it a list? (or tuple, etc.)
+    if isinstance(arr, (list, tuple)):
+        # For standard Python sequences, `len()` is correct.
+        return len(arr) > 0
+
+    # If it's something else (None, an int, etc.), it's not a valid array/list.
+    return False
+# visualization_strategies.py v1.1
+# Part of Project Genesis: Breathing Causality
+# v1.1: "Dependency Injection Fix"
+# - The strategies are now stateless. They no longer assume access to global
+#   colormaps.
+# - `get_node_colors` now explicitly requires a `phase_cmap` argument, making
+#   the dependency clear and the class more reusable and testable.
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+class AbstractVizStrategy:
+    """Interface for all field visualization strategies."""
+    def get_heatmap_values(self, field_values: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def get_node_colors(self, field_values: np.ndarray, phase_cmap: plt.Colormap) -> np.ndarray:
+        """
+        MODIFIED: Now requires the colormap to be passed in.
+        """
+        raise NotImplementedError
+
+class ScalarFieldViz(AbstractVizStrategy):
+    """Visualization strategy for a single-component ScalarField."""
+    def get_heatmap_values(self, field_values: np.ndarray) -> np.ndarray:
+        return np.abs(field_values.ravel())**2
+
+    def get_node_colors(self, field_values: np.ndarray, phase_cmap: plt.Colormap) -> np.ndarray:
+        """Node color is determined by the complex phase, using the provided colormap."""
+        phases = np.angle(field_values.ravel())
+        return phase_cmap((phases + np.pi) / (2 * np.pi))
+
